@@ -2,7 +2,7 @@
   "name": "dsh-codebuddy-cli",
   "displayName": "DSH CodeBuddy CLI Connect",
   "description": "复用 CodeBuddy CLI 的登录态，把 CodeBuddy 包含的模型自动接入 DeepSeek Harness — reuse the CodeBuddy CLI sign-in to bring its models into DeepSeek Harness with zero configuration.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": "fu827707013",
   "keywords": [
     "dsh-plugin",
@@ -80,7 +80,7 @@
     "@deepseek-ai/dsh-llm-pi-ai": ">=0.2.1-rc.2 <0.3.0",
     "@deepseek-ai/dsh-settings": ">=0.2.1-rc.2 <0.3.0",
     "@deepseek-ai/schemastery": "^3.18.2",
-    "@earendil-works/pi-ai": ">=0.84.2 <0.86.0",
+    "@earendil-works/pi-ai": ">=0.84.2 <2.0.0",
     "react": "^18.2.0"
   },
   "devDependencies": {
@@ -103,7 +103,7 @@
     "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2",
     "@deepseek-ai/dsh-settings": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.2",
-    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-ai": "^1.1.0",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "lightningcss": "^1.33.0",
