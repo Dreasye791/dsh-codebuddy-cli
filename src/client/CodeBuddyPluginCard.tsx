@@ -12,6 +12,7 @@ import { IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primit
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
+  CODEBUDDY_DOCK_PREFERENCE_PATH,
   CODEBUDDY_MODELS_PATH,
   CODEBUDDY_STATUS_PATH,
 } from '../status-paths.ts'
@@ -275,6 +276,96 @@ function ModelSelection({ selection, onSaved, t }: {
 /** The horizontal tab names rendered in the card body. */
 type CardTab = 'accounts' | 'models' | 'stats' | 'remaining'
 
+/**
+ * The composer-dock visibility switch.
+ *
+ * The dock row is shared with the host's session-stats strip, so while a
+ * non-CodeBuddy provider is selected it costs width without carrying any credit
+ * figure (#6). Whether that trade is worth it depends on the window and on how
+ * much the operator values seeing the provider name, so the choice is theirs.
+ */
+function DockPreference({ value, writable, onSaved, t }: {
+  /** Host value; undefined means the document predates the switch. */
+  value: boolean | undefined
+  writable: boolean
+  /** Ask the card to re-read the status document after a landed write. */
+  onSaved?: () => void
+  t: CodeBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  // An untouched install keeps the row, matching the schema default.
+  const host = value ?? true
+  const [checked, setChecked] = useState(host)
+  const [seeded, setSeeded] = useState(host)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  // Re-seed when the host document changes under us (another tab, a refresh).
+  if (seeded !== host && !saving) {
+    setSeeded(host)
+    setChecked(host)
+  }
+
+  const save = async (next: boolean): Promise<void> => {
+    const previous = checked
+    setChecked(next)
+    setSaving(true)
+    setSaved(false)
+    setError(undefined)
+    try {
+      const response = await fetch(CODEBUDDY_DOCK_PREFERENCE_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ showDockOnOtherProviders: next }),
+      })
+      if (!response.ok) {
+        const detail: unknown = await response.json().catch(() => undefined)
+        const message = typeof (detail as { error?: unknown } | undefined)?.error === 'string'
+          ? (detail as { error: string }).error
+          : `HTTP ${String(response.status)}`
+        throw new Error(message)
+      }
+      // Re-seed from the answer rather than trusting the optimistic flip.
+      const body: unknown = await response.json().catch(() => undefined)
+      const landed = (body as { showDockOnOtherProviders?: unknown } | undefined)?.showDockOnOtherProviders
+      if (typeof landed === 'boolean') {
+        setChecked(landed)
+        setSeeded(landed)
+      }
+      setSaved(true)
+      onSaved?.()
+    } catch (cause: unknown) {
+      setChecked(previous)
+      setError(cause instanceof Error ? cause.message : t('requestFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className={css.quotaList} style={{ marginBottom: 16 }}>
+      <h3 style={quotaTitleStyle}>{t('dockPreferenceHeading')}</h3>
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: writable ? 'pointer' : 'default' }}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={!writable || saving}
+          onChange={(event) => { void save(event.target.checked) }}
+          style={{ marginTop: 2 }}
+        />
+        <span>
+          {t('dockPreferenceLabel')}
+          {saving ? <span className={css.bodyText}> {t('dockPreferenceSaving')}</span> : null}
+          {saved && !saving ? <span className={css.bodyText}> {t('dockPreferenceSaved')}</span> : null}
+        </span>
+      </label>
+      <p className={css.bodyText}>{t('dockPreferenceHint')}</p>
+      {writable ? null : <p className={css.bodyText}>{t('dockPreferenceReadOnly')}</p>}
+      {error === undefined ? null : <p className={css.bodyError}>{t('dockPreferenceSaveFailed', { message: error })}</p>}
+    </div>
+  )
+}
 /** Render CodeBuddy sign-in state and the tabbed panel as one expandable card. */
 export function CodeBuddyPluginCard({ t }: CodeBuddyPluginCardProps) {
   if (t === undefined) throw new Error('CodeBuddy plugin card requires its translation function')
@@ -429,6 +520,19 @@ export function CodeBuddyPluginCard({ t }: CodeBuddyPluginCardProps) {
 
               {tab === 'models' ? (
                 <div role="tabpanel">
+                  {/*
+                    A plain configuration read, so it is offered regardless of
+                    sign-in state: the dock row is visible before anyone signs in
+                    too, and this is the only surface that can turn it off. It
+                    leads the panel because it is a display preference, not a
+                    model choice — the list below is long enough to bury it.
+                  */}
+                  <DockPreference
+                    value={status.status === 'error' ? undefined : status.showDockOnOtherProviders}
+                    writable={status.status !== 'error' && status.showDockOnOtherProvidersWritable === true}
+                    onSaved={() => { void refresh() }}
+                    t={t}
+                  />
                   <h3 style={quotaTitleStyle}>{t('modelsHeading')}</h3>
                   {signedIn && status.selection !== undefined ? (
                     <ModelSelection selection={status.selection} onSaved={() => { void refresh() }} t={t} />

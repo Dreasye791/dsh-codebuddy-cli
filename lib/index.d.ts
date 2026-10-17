@@ -775,6 +775,21 @@ interface Config {
    * already pinned to a de-selected model keeps working.
    */
   enabledModels?: string[];
+  /**
+   * Whether the composer credit line stays visible on a foreign provider.
+   *
+   * The row is meant for CodeBuddy credit, so it only carries a figure while a
+   * CodeBuddy model is selected. On another provider it degrades to the current
+   * provider and model name — which the composer's own model picker already
+   * shows — while still occupying a share of the dock, the flex line it holds
+   * together with the host's session-stats strip. On a narrow viewport that
+   * extra segment can push the host's rounds and token figures into ellipsis.
+   *
+   * The row therefore stays by default (the name is still useful, and a row that
+   * vanished on every provider switch would shift the composer's layout) but can
+   * be turned off from the plugin's own settings card.
+   */
+  showDockOnOtherProviders?: boolean;
 }
 /**
  * The plugin's configuration schema.

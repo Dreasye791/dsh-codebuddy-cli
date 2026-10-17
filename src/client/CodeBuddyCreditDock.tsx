@@ -5,17 +5,19 @@
  * statistics, styled to read as one family (tertiary 13px text, tabular
  * numbers, same variable palette).
  *
- * The row is present whenever the session is on this plugin's provider: it
- * names the current provider and model, prefixes the remaining credit and
- * appends the model's billing multiplier. Loading, signed-out and error states
- * each have their own wording rather than collapsing the row, so the composer's
- * layout never shifts while a CodeBuddy model stays selected.
+ * The row is present by default whatever the session has selected: it names the
+ * current provider and model, and for a CodeBuddy selection prefixes the
+ * remaining credit and appends the model's billing multiplier. Loading,
+ * signed-out and error states each have their own wording rather than
+ * collapsing the row, so the composer's layout never shifts.
  *
- * With any other provider selected the row renders nothing instead. It would
- * carry no CodeBuddy figure there — only the provider and model name, which the
- * composer's model picker already shows — and the dock is a shared flex line:
- * an extra full-width segment pushed the host's session-stats segments into
- * ellipsis when another widget contributed to the same row (#6).
+ * On a foreign provider the row carries no CodeBuddy figure — only the provider
+ * and model name — and since it shares the dock's flex line with the host's
+ * session-stats strip, that extra segment can push the host's rounds and token
+ * figures into ellipsis on a narrow viewport (#6). Hiding it in that case is
+ * therefore a setting (`showDockOnOtherProviders`, default on) rather than a
+ * silent behaviour change: the operator decides between the extra context and
+ * the reclaimed width.
  *
  * Clicking opens a small menu-surface panel (same surface vocabulary as the
  * composer's context-occupancy panel) with per-package progress rows, the
@@ -199,8 +201,8 @@ function PackageRow({ account, t }: {
  * There is deliberately no provider gate at this level: the body keeps its hooks
  * mounted across provider switches so `codeBuddy` can flip without changing the
  * hook order. The body switches its own behaviour on that flag — outside this
- * plugin's provider it starts no status request, keeps no interval, closes the
- * panel and renders nothing.
+ * plugin's provider it starts no status request, keeps no interval and closes
+ * the panel, leaving only the setting-controlled visibility of the row itself.
  */
 export function CodeBuddyCreditDock({ useProjection, useSession, t }: CodeBuddyCreditDockProps) {
   if (t === undefined) throw new Error('CodeBuddy credit dock requires its translation function')
@@ -235,6 +237,33 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false }
+  }, [])
+
+  // Independent of the credit read: the visibility preference applies on every
+  // provider, while the credit query below only runs on CodeBuddy models. Read
+  // once on mount — the switch lives in the settings card, which writes through
+  // the host and re-renders this dock on the next snapshot.
+  // Defaults to visible: an untouched install keeps showing the row, and a
+  // failed read must never make it disappear.
+  const [showOnOtherProviders, setShowOnOtherProviders] = useState(true)
+  useEffect(() => {
+    let live = true
+    const read = async (): Promise<void> => {
+      try {
+        const response = await fetch(CODEBUDDY_STATUS_PATH, {
+          headers: { accept: 'application/json' },
+          credentials: 'same-origin',
+        })
+        if (!response.ok) return
+        const value: unknown = await response.json()
+        const flag = (value as { showDockOnOtherProviders?: unknown } | null)?.showDockOnOtherProviders
+        if (live && typeof flag === 'boolean') setShowOnOtherProviders(flag)
+      } catch {
+        // Keep the default (row visible); a failed read must not hide the row.
+      }
+    }
+    void read()
+    return () => { live = false }
   }, [])
 
   const refresh = async (): Promise<void> => {
@@ -301,15 +330,16 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
     }
   }, [open])
 
-  // The row is CodeBuddy-only. With another provider selected it carries no
-  // credit figure and no multiplier — just the provider and model name, which
-  // the composer's own model picker already shows — while still claiming a full
-  // row of the shared dock flex line. That squeezed the host's session-stats
-  // segments (rounds, token usage) into ellipsis whenever another widget also
-  // contributed to the same row, so the row is dropped instead of padded
-  // (#6). Every hook above has already run, so returning here keeps the hook
-  // order stable; only the rendered output changes.
-  if (!codeBuddy) return null
+  // The row is CodeBuddy-only in substance: with another provider selected it
+  // carries no credit figure and no multiplier, just the provider and model
+  // name. It still occupies a share of the dock — the flex line it shares with
+  // the host's session-stats strip — so on a narrow viewport it can push the
+  // host's rounds and token figures into ellipsis. Whether it stays in that
+  // case is the operator's call (#6 asked for a switch rather than a silent
+  // behaviour change), so it is read from the settings document; the default is
+  // to keep the row, which is what an untouched install has always done. Every
+  // hook above has already run, so returning here keeps the hook order stable.
+  if (!codeBuddy && !showOnOtherProviders) return null
 
   const line = buildDockLine(selection, load)
   const lineText = renderDockSegments(line.segments, t)

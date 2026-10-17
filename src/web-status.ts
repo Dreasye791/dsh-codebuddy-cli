@@ -21,6 +21,7 @@ import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { generateAccountId } from './oauth.ts'
 import {
   CODEBUDDY_CHECKIN_PATH,
+  CODEBUDDY_DOCK_PREFERENCE_PATH,
   CODEBUDDY_MODELS_PATH,
   CODEBUDDY_STATUS_PATH,
   CODEBUDDY_LOGIN_START_PATH,
@@ -88,6 +89,13 @@ export interface CodeBuddyStatusRouteOptions {
    * attached, which the card renders as a read-only selection.
    */
   setEnabledModels?: (ids: readonly string[]) => Promise<boolean>
+  /**
+   * Read the composer-dock visibility preference for foreign providers.
+   * Undefined means "keep showing it", matching an untouched install.
+   */
+  showDockOnOtherProviders?: () => boolean | undefined
+  /** Persist the dock visibility preference; false when no settings provider is attached. */
+  setShowDockOnOtherProviders?: (value: boolean) => Promise<boolean>
   /** Whether a settings provider is attached and could accept a write. */
   settingsWritable?: () => boolean
   /**
@@ -308,6 +316,21 @@ export async function withAccounts(
   deps: CodeBuddyStatusRouteOptions,
   status: CodeBuddyWebStatus,
 ): Promise<CodeBuddyWebStatus> {
+  // The dock preference is a plain configuration read, so it is attached before
+  // any early return below — the dock needs it while signed out, and on a
+  // host with no account store the function returns the document untouched.
+  const withDockPreference = (document: CodeBuddyWebStatus): CodeBuddyWebStatus => {
+    if (document.status === 'error') return document
+    const preference = deps.showDockOnOtherProviders?.()
+    if (preference === undefined) return document
+    return {
+      ...document,
+      showDockOnOtherProviders: preference,
+      showDockOnOtherProvidersWritable:
+        deps.setShowDockOnOtherProviders !== undefined && (deps.settingsWritable?.() ?? false),
+    }
+  }
+  status = withDockPreference(status)
   if (deps.accountStore === undefined) return status
   // The error branch carries no account fields in its shape; only the
   // signed-in / signed-out document kinds carry the optional `accounts`.
@@ -535,6 +558,52 @@ export function codeBuddyEnabledModelsHandler(
 }
 
 /**
+ * The composer-dock preference write handler.
+ *
+ * Same strict gate as the other state-changing routes: POST only, loopback Host
+ * and a mandatory loopback `Origin`, JSON content type.
+ */
+export function codeBuddyDockPreferenceHandler(
+  deps: CodeBuddyStatusRouteOptions,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    if (req.method !== 'POST') {
+      json(res, 405, { error: 'method not allowed' })
+      return
+    }
+    if (!checkLoopbackPost(req, res)) return
+    const write = deps.setShowDockOnOtherProviders
+    if (write === undefined) {
+      json(res, 501, { error: 'settings-not-writable' })
+      return
+    }
+    try {
+      let body: unknown
+      try {
+        body = JSON.parse(await readBody(req))
+      } catch {
+        json(res, 400, { error: 'expected {"showDockOnOtherProviders": boolean}' })
+        return
+      }
+      const value = (body as { showDockOnOtherProviders?: unknown } | null)?.showDockOnOtherProviders
+      if (typeof value !== 'boolean') {
+        json(res, 400, { error: 'expected {"showDockOnOtherProviders": boolean}' })
+        return
+      }
+      if (!await write(value)) {
+        json(res, 501, { error: 'settings-not-writable' })
+        return
+      }
+      // Answer with the persisted value so the card re-seeds from the Host
+      // instead of trusting its own optimistic state.
+      json(res, 200, { showDockOnOtherProviders: value })
+    } catch (error: unknown) {
+      json(res, 500, { error: safeMessage(error) })
+    }
+  }
+}
+
+/**
  * The daily check-in write handler.
  *
  * Same strict gate as the enabled-model write: POST only, loopback Host and a
@@ -620,6 +689,11 @@ export function registerCodeBuddyStatusRoute(ctx: Context, deps: CodeBuddyStatus
       path: CODEBUDDY_MODELS_PATH,
       handler: codeBuddyEnabledModelsHandler(deps),
     })
+    const disposeDockPreference = ctx.webServer.register({
+      kind: 'exact',
+      path: CODEBUDDY_DOCK_PREFERENCE_PATH,
+      handler: codeBuddyDockPreferenceHandler(deps),
+    })
     const disposeCheckIn = ctx.webServer.register({
       kind: 'exact',
       path: CODEBUDDY_CHECKIN_PATH,
@@ -658,6 +732,7 @@ export function registerCodeBuddyStatusRoute(ctx: Context, deps: CodeBuddyStatus
     return () => {
       dispose()
       disposeModels()
+      disposeDockPreference()
       disposeCheckIn()
       disposeLoginStart()
       disposeLoginPoll()

@@ -8,6 +8,7 @@ import type { CodeBuddyCredential } from '../src/auth.ts'
 import type { CodeBuddyCredits } from '../src/upstream.ts'
 import {
   codeBuddyCheckInHandler,
+  codeBuddyDockPreferenceHandler,
   codeBuddyStatusHandler,
   codeBuddyWebStatus,
   codeBuddyLoginStartHandler,
@@ -19,6 +20,7 @@ import {
 } from '../src/web-status.ts'
 import {
   CODEBUDDY_CHECKIN_PATH,
+  CODEBUDDY_DOCK_PREFERENCE_PATH,
   CODEBUDDY_STATUS_PATH,
   CODEBUDDY_LOGIN_START_PATH,
   CODEBUDDY_LOGIN_POLL_PATH,
@@ -193,6 +195,105 @@ describe('status document catalog and credits cache', () => {
     await codeBuddyWebStatus(deps)
     await codeBuddyWebStatus(deps)
     expect(creditCounts.count).toBe(2)
+  })
+})
+
+describe('dock preference route', () => {
+  /** Raw POST to the dock-preference route with full header control. */
+  function requestPreference(options: {
+    port: number
+    method: string
+    headers: Record<string, string>
+    body?: string
+  }): Promise<{ status: number, body: string }> {
+    return new Promise((resolve, reject) => {
+      const outgoing = request({
+        host: '127.0.0.1',
+        port: options.port,
+        method: options.method,
+        path: CODEBUDDY_DOCK_PREFERENCE_PATH,
+        headers: options.headers,
+      }, (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => resolve({
+          status: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf8'),
+        }))
+      })
+      outgoing.on('error', reject)
+      outgoing.end(options.body ?? '')
+    })
+  }
+
+  async function startPreferenceServer(
+    write: CodeBuddyStatusRouteOptions['setShowDockOnOtherProviders'],
+  ): Promise<number> {
+    const deps: CodeBuddyStatusRouteOptions = {
+      store: { resolve: async () => undefined } as unknown as CodeBuddyCredentialStore,
+      client: { fetchCredits: async () => ({ total: 0, accounts: [] }) },
+      models: () => [],
+      ...write === undefined ? {} : { setShowDockOnOtherProviders: write },
+    }
+    const server = createServer(codeBuddyDockPreferenceHandler(deps))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as { port: number }
+    CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
+    return port
+  }
+
+  const jsonHeaders = (port: number): Record<string, string> => ({
+    host: `127.0.0.1:${String(port)}`,
+    origin: `http://127.0.0.1:${String(port)}`,
+    'content-type': 'application/json',
+  })
+
+  it('persists the value and echoes it back', async () => {
+    const seen: boolean[] = []
+    const port = await startPreferenceServer(async (value) => {
+      seen.push(value)
+      return true
+    })
+    const response = await requestPreference({
+      port, method: 'POST', headers: jsonHeaders(port),
+      body: JSON.stringify({ showDockOnOtherProviders: false }),
+    })
+    expect(response.status).toBe(200)
+    expect(JSON.parse(response.body)).toEqual({ showDockOnOtherProviders: false })
+    expect(seen).toEqual([false])
+  })
+
+  it('refuses a non-boolean payload without calling the writer', async () => {
+    let called = false
+    const port = await startPreferenceServer(async () => {
+      called = true
+      return true
+    })
+    const response = await requestPreference({
+      port, method: 'POST', headers: jsonHeaders(port),
+      body: JSON.stringify({ showDockOnOtherProviders: 'false' }),
+    })
+    expect(response.status).toBe(400)
+    expect(called).toBe(false)
+  })
+
+  it('answers 501 when no settings provider is attached', async () => {
+    const port = await startPreferenceServer(undefined)
+    const response = await requestPreference({
+      port, method: 'POST', headers: jsonHeaders(port),
+      body: JSON.stringify({ showDockOnOtherProviders: true }),
+    })
+    expect(response.status).toBe(501)
+  })
+
+  it('refuses a POST without an Origin header', async () => {
+    const port = await startPreferenceServer(async () => true)
+    const response = await requestPreference({
+      port, method: 'POST',
+      headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ showDockOnOtherProviders: true }),
+    })
+    expect(response.status).toBe(403)
   })
 })
 

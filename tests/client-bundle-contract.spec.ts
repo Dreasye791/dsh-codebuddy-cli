@@ -54,11 +54,13 @@ maybe('built client bundle slot + icon contract', () => {
     expect(bundle).toContain('IconChevronDownOutlineRegular')
   })
 
-  it('renders the dock row only for this plugin provider', () => {
+  it('gates the dock row on the setting instead of hiding it unconditionally', () => {
     // The dock shares a flex line with the host's session-stats strip, so an
-    // extra row on a foreign provider squeezed the rounds/token segments into
-    // ellipsis (#6). The row must therefore bail out before rendering rather
-    // than fall through to a provider/model-only line.
-    expect(bundle).toMatch(/if \(!codeBuddy\)\s*return null/)
+    // extra row on a foreign provider can squeeze the rounds/token segments into
+    // ellipsis (#6). The row must stay visible by default and bail out only when
+    // the operator turned it off — a hardcoded `!codeBuddy` return would silently
+    // remove the provider name the reporter asked to keep.
+    expect(bundle).toMatch(/if \(!codeBuddy && !showOnOtherProviders\)/)
+    expect(bundle).not.toMatch(/if \(!codeBuddy\)\s*return null/)
   })
 })

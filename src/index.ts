@@ -129,6 +129,21 @@ export interface Config {
    * already pinned to a de-selected model keeps working.
    */
   enabledModels?: string[]
+  /**
+   * Whether the composer credit line stays visible on a foreign provider.
+   *
+   * The row is meant for CodeBuddy credit, so it only carries a figure while a
+   * CodeBuddy model is selected. On another provider it degrades to the current
+   * provider and model name — which the composer's own model picker already
+   * shows — while still occupying a share of the dock, the flex line it holds
+   * together with the host's session-stats strip. On a narrow viewport that
+   * extra segment can push the host's rounds and token figures into ellipsis.
+   *
+   * The row therefore stays by default (the name is still useful, and a row that
+   * vanished on every provider switch would shift the composer's layout) but can
+   * be turned off from the plugin's own settings card.
+   */
+  showDockOnOtherProviders?: boolean
 }
 
 /**
@@ -176,6 +191,10 @@ function unwrapConfig(value: unknown): Config {
 export const Config: z<Config> = z.object({
   authFile: z.string().description('CodeBuddy CLI auth file (defaults to the CLI\'s own location)').volatile(),
   enabledModels: z.array(z.string()).description('Model ids offered in the model pickers (empty means every model)').volatile(),
+  showDockOnOtherProviders: z.boolean()
+    .description('Keep the composer credit line visible while another provider (not CodeBuddy) is selected')
+    .default(true)
+    .volatile(),
 }) as unknown as z<Config>
 
 /**
@@ -226,6 +245,22 @@ export function apply(ctx: Context, rawConfig: Config): void {
     return true
   }
 
+  /**
+   * Whether the composer dock row shows on a foreign provider.
+   *
+   * Absent means "show it": an untouched install keeps the row, so the provider
+   * and model name stay visible without anyone opting in (#6 asked for this as a
+   * switch rather than a silent behaviour change).
+   */
+  const showDockOnOtherProviders = (): boolean | undefined => current().showDockOnOtherProviders
+
+  const setShowDockOnOtherProviders = async (value: boolean): Promise<boolean> => {
+    const settings = ctx.get('settings')
+    if (settings === undefined) return false
+    await settings.update(settingsCompatNamespace(ctx), { showDockOnOtherProviders: value })
+    return true
+  }
+
   // Same-origin status route backing the Plugin-configuration card; the
   // webServer service is optional (a headless profile serves no browser).
   ctx.inject(['webServer'], webCtx => registerCodeBuddyStatusRoute(webCtx, {
@@ -234,6 +269,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     models: () => catalog.current(),
     enabledModels,
     setEnabledModels,
+    showDockOnOtherProviders,
+    setShowDockOnOtherProviders,
     settingsWritable: () => ctx.get('settings') !== undefined,
     checkIn: credential => client.checkIn(credential),
     refreshToken: credential => client.refreshToken(credential),

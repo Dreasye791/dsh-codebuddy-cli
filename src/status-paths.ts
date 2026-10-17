@@ -15,6 +15,16 @@ export const CODEBUDDY_STATUS_PATH = '/plugins/dsh-codebuddy-cli/status'
 export const CODEBUDDY_MODELS_PATH = '/plugins/dsh-codebuddy-cli/enabled-models'
 
 /**
+ * Plugin-owned write endpoint for the composer dock's foreign-provider switch.
+ *
+ * The card toggles it from its own settings surface rather than the generated
+ * form, so the change takes effect on the next status read instead of waiting
+ * for a host restart. Same loopback/Origin/JSON gates as the enabled-model
+ * write route, because it mutates the settings document too.
+ */
+export const CODEBUDDY_DOCK_PREFERENCE_PATH = '/plugins/dsh-codebuddy-cli/dock-preference'
+
+/**
  * Plugin-owned daily check-in endpoint.
  *
  * The card's check-in button POSTs here; the host half forwards the request
@@ -345,6 +355,13 @@ export type CodeBuddyWebStatus =
     status: 'signed-out'
     /** Stored accounts for the account management panel (may be empty). */
     accounts?: readonly CodeBuddyWebAccount[]
+    /**
+     * Whether the composer dock row renders on a foreign provider. Carried on
+     * every document kind because the dock reads it while signed out too.
+     */
+    showDockOnOtherProviders?: boolean
+    /** Whether the Host can persist `showDockOnOtherProviders`. */
+    showDockOnOtherProvidersWritable?: boolean
   }
   | {
     status: 'signed-in'
@@ -362,5 +379,9 @@ export type CodeBuddyWebStatus =
     selection?: CodeBuddyWebModelSelection
     /** Stored accounts for the account management panel. */
     accounts?: readonly CodeBuddyWebAccount[]
+    /** See the signed-out variant: the dock's foreign-provider preference. */
+    showDockOnOtherProviders?: boolean
+    /** See the signed-out variant: whether that preference can be saved. */
+    showDockOnOtherProvidersWritable?: boolean
     }
   | { status: 'error'; message: string }
