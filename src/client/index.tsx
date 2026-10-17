@@ -2,6 +2,11 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+// Type-only: the settings shell declares the `settings.plugins.tab` slot in its
+// own SlotMap merge (ui-settings/src/client/contract/slots.ts) precisely so tab
+// contributors can type against it without depending on one another. Without
+// this import the name is not part of the slot union and `register` rejects it.
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'

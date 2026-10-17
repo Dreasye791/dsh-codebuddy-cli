@@ -1,131 +1,114 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import z from '@deepseek-ai/schemastery'
 import * as CodeBuddy from '../src/index.ts'
 import { installSettingsSectionCompat, resolveSettingsNamespaceCompat } from '../src/settings-compat.ts'
 
 /**
- * The settings API exists in three generations, and the plugin has to register
- * its section on all of them:
+ * DSH 0.2.1 removed both older settings installers (`installSettingsSection`
+ * from the package and `installSection` from the provider). Forms are derived
+ * from the plugin's own Loader-entry Config, and a plugin with a custom card
+ * opts out through `configure({ auto: false })`.
  *
- *   1. a module-level `installSettingsSection` helper,
- *   2. a `settings.installSection(...)` provider method,
- *   3. managed forms — the plugin's loader-entry Config schema is the form, and
- *      the provider exposes `configure` instead of any installer.
- *
- * DSH 0.1.7-rc.2 removed both installers, so an unguarded call to generation 2
- * throws `installSection is not a function` out of `apply()`, which kills the
- * plugin's fiber and makes its settings card disappear from the UI entirely.
+ * The real `SettingsForms` service now injects the host's `configEditor` and
+ * `profileContext`, neither of which exists outside a booted profile — so these
+ * tests stand in a minimal provider exposing exactly the surface this plugin
+ * uses. That keeps the assertions on the plugin's own contract rather than on
+ * host plumbing.
  */
 
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private stored: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.stored))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.stored[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
+/** The surface this plugin actually touches on the settings service. */
+interface FakeSettings {
+  configure: ReturnType<typeof vi.fn>
+  describe: ReturnType<typeof vi.fn>
+  update: ReturnType<typeof vi.fn>
 }
 
-/** A schema shaped like the plugin's real Config: every field marked volatile. */
-function volatileSchema(): z<{ authFile: string; enabledModels: string[] }> {
-  return z.object({
-    authFile: z.string().default('').volatile(),
-    enabledModels: z.array(z.string()).default([]).volatile(),
-  }) as unknown as z<{ authFile: string; enabledModels: string[] }>
+function mountFakeSettings(ctx: Context, options: { namespace?: string, value?: unknown } = {}): FakeSettings {
+  const fake: FakeSettings = {
+    configure: vi.fn(() => () => {}),
+    describe: vi.fn(() => [{
+      ns: (options.namespace ?? CodeBuddy.CODEBUDDY_SETTINGS_NS) as SettingsNamespace,
+      value: options.value ?? {},
+    }]),
+    update: vi.fn(async () => {}),
+  }
+  ctx.provide('settings', fake as never)
+  return fake
 }
 
-describe('settings compatibility across provider generations', () => {
-  it('registers the section on generation 2 without throwing', async () => {
+describe('settings integration on the managed-forms generation', () => {
+  it('registers the custom-page opt-out without throwing', async () => {
     const ctx = new Context()
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    const settings = mountFakeSettings(ctx)
 
-    // The bug that removed the settings card: this call used to throw
-    // `installSection is not a function` straight out of `apply`.
-    expect(() => installSettingsSectionCompat(
-      ctx,
-      CodeBuddy.CODEBUDDY_SETTINGS_NS,
-      volatileSchema(),
-      {} as { authFile: string; enabledModels: string[] },
-      { setSource() {}, onChange() {} },
-    )).not.toThrow()
+    // A host that still expected an installer would throw here; 0.2.1 has no
+    // installer at all, so this must instead register the page policy.
+    expect(() => installSettingsSectionCompat(ctx, CodeBuddy.CODEBUDDY_SETTINGS_NS, () => {})).not.toThrow()
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    const descriptor = ctx.settings.describe().find(row => row.ns === CodeBuddy.CODEBUDDY_SETTINGS_NS)
-    expect(descriptor).toBeDefined()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(settings.configure).toHaveBeenCalled()
+    // The plugin ships its own card, so the generated page must stay off.
+    expect(settings.configure.mock.calls[0]?.[0]).toEqual({ auto: false })
 
     await ctx.fiber.dispose()
   })
 
-  it('keeps generation 2 values plain instead of leaking volatile references', async () => {
+  it('needs no settings service to stay harmless', async () => {
+    // A headless profile serves no browser and mounts no settings provider; the
+    // plugin must still load and serve its models there.
     const ctx = new Context()
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-
-    installSettingsSectionCompat(
-      ctx,
-      CodeBuddy.CODEBUDDY_SETTINGS_NS,
-      volatileSchema(),
-      {} as { authFile: string; enabledModels: string[] },
-      { setSource() {}, onChange() {} },
-    )
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    await ctx.settings.update(CodeBuddy.CODEBUDDY_SETTINGS_NS, { authFile: '/tmp/plain.info' })
-    const updated = ctx.settings.describe().find(row => row.ns === CodeBuddy.CODEBUDDY_SETTINGS_NS)
-
-    // Generation 2 returns the resolved value verbatim. A volatile schema would
-    // surface `{ get, [Symbol(cosmokit.volatile.write)] }` here, so the compat
-    // layer has to strip the marker before the installer sees the schema.
-    expect((updated?.value as Record<string, unknown>)['authFile']).toBe('/tmp/plain.info')
-
+    expect(() => installSettingsSectionCompat(ctx, CodeBuddy.CODEBUDDY_SETTINGS_NS, () => {})).not.toThrow()
     await ctx.fiber.dispose()
   })
 
-  it('resolves the plugin namespace on every generation', async () => {
+  it('resolves the section namespace from the loader entry', async () => {
     const ctx = new Context()
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-    const provider = ctx.get('settings')
 
-    // Generation 2 registers under whatever namespace the caller passes, so the
-    // plugin's public constant stays correct.
-    expect(resolveSettingsNamespaceCompat(ctx, provider, CodeBuddy.CODEBUDDY_SETTINGS_NS))
+    // Without an entry the plugin's public constant is the answer.
+    expect(resolveSettingsNamespaceCompat(ctx, CodeBuddy.CODEBUDDY_SETTINGS_NS))
       .toBe(CodeBuddy.CODEBUDDY_SETTINGS_NS)
 
-    // Generation 3 derives sections from the loader entry, so a context that
-    // carries one resolves to the entry id instead.
+    // The managed-forms provider addresses sections by the loader entry id, so a
+    // context carrying one resolves to that id instead.
     const withEntry = ctx.isolate('probe')
     Object.defineProperty(withEntry, 'fiber', {
       value: { entry: { options: { id: 'llm-codebuddy-cli' } } },
       configurable: true,
     })
-    expect(resolveSettingsNamespaceCompat(withEntry, { configure() {} }, CodeBuddy.CODEBUDDY_SETTINGS_NS))
+    expect(resolveSettingsNamespaceCompat(withEntry, CodeBuddy.CODEBUDDY_SETTINGS_NS))
       .toBe('llm-codebuddy-cli')
 
     await ctx.fiber.dispose()
   })
 
-  it('keeps a plain schema intact when no volatile marker is present', () => {
-    // Guards the strip step against over-reach: a schema that never marked a
-    // field volatile must still resolve its defaults through the compat layer.
+  it('survives a context with no loader service', async () => {
+    // Reading an undeclared cordis service throws; resolving the namespace must
+    // not depend on the loader being reachable from this fiber.
     const ctx = new Context()
-    expect(() => installSettingsSectionCompat(
-      ctx,
-      CodeBuddy.CODEBUDDY_SETTINGS_NS,
-      z.object({ authFile: z.string().default('/default.info') }) as unknown as z<{ authFile: string }>,
-      {} as { authFile: string },
-      { setSource() {}, onChange() {} },
-    )).not.toThrow()
+    expect(() => resolveSettingsNamespaceCompat(ctx, CodeBuddy.CODEBUDDY_SETTINGS_NS)).not.toThrow()
+    await ctx.fiber.dispose()
+  })
+
+  it('notifies on a document update for its own namespace only', async () => {
+    const ctx = new Context()
+    const settings = mountFakeSettings(ctx)
+
+    const onChange = vi.fn()
+    installSettingsSectionCompat(ctx, CodeBuddy.CODEBUDDY_SETTINGS_NS, onChange)
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    // Another plugin's section must not trigger this plugin's re-read.
+    ctx.emit('settings/document-updated', 'some-other-plugin' as SettingsNamespace, 1)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(onChange).not.toHaveBeenCalled()
+
+    // Its own namespace must — that is how a live edit reaches `current`.
+    ctx.emit('settings/document-updated', CodeBuddy.CODEBUDDY_SETTINGS_NS, 2)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(onChange).toHaveBeenCalled()
+    expect(settings.describe).toBeDefined()
+
+    await ctx.fiber.dispose()
   })
 })

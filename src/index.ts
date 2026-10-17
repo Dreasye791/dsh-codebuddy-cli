@@ -89,30 +89,30 @@ export const inject = ['llm']
  * Settings namespace owning the configuration card.
  *
  * DSH 0.1.2 dropped the `settingsNamespace()` branding function: a namespace is
- * now a nominal string, validated by the type system where it is used rather
- * than at runtime by a function call. The brand is compile-time only, so this
- * stays the plain string it always was — every comparison, descriptor lookup,
- * and `dsh` config file still sees `'codebuddy-cli'`. It is cast once here so the
- * public constant carries the seam's type without pulling the brand helper
- * into this package (upstream DSH plugins, `dsh-llm-pi-ai` included, pass
- * their namespaces as plain string literals).
+ * a nominal string, validated by the type system where it is used rather than at
+ * runtime by a function call. The brand is compile-time only, so this stays the
+ * plain string it always was — every comparison, descriptor lookup, and `dsh`
+ * config file still sees `'codebuddy-cli'`. It is cast once here so the public
+ * constant carries the seam's type without pulling the brand helper into this
+ * package (upstream DSH plugins, `dsh-llm-pi-ai` included, pass their namespaces
+ * as plain string literals).
  *
- * On DSH 0.1.7+ the settings provider addresses sections by Loader entry id
- * instead, so reads and writes go through the namespace resolved by
- * `settingsCompatNamespace()` below rather than this constant directly.
+ * DSH 0.2.1 addresses sections by Loader entry id instead, so reads and writes go
+ * through the namespace resolved by `settingsCompatNamespace()` below rather than
+ * this constant directly.
  */
 export const CODEBUDDY_SETTINGS_NS = 'codebuddy-cli' as SettingsNamespace
 
 /**
- * The namespace the installed settings provider actually uses.
+ * The namespace the settings provider actually uses.
  *
- * Generations 1 and 2 accept the caller's namespace, so this is the plugin's
- * own constant. Managed forms (0.1.7+) derive the section from the profile
- * entry and use its id (`llm-codebuddy-cli`) — writing to the constant there
- * would target a section that does not exist.
+ * Managed forms (DSH 0.2.1) derive the section from the profile entry and use its
+ * id (`llm-codebuddy-cli`) — writing to the constant there would target a section
+ * that does not exist. The constant remains the fallback for a context that
+ * cannot name its entry.
  */
 function settingsCompatNamespace(ctx: Context): SettingsNamespace {
-  return resolveSettingsNamespaceCompat(ctx, ctx.get('settings'), CODEBUDDY_SETTINGS_NS)
+  return resolveSettingsNamespaceCompat(ctx, CODEBUDDY_SETTINGS_NS)
 }
 
 /** Plugin configuration. */
@@ -162,15 +162,16 @@ function unwrapConfig(value: unknown): Config {
 /**
  * The plugin's configuration schema.
  *
- * Every field is marked `volatile` because DSH 0.1.7+ builds its settings
- * forms from volatile fields only (`volatileForm` in `dsh-settings` skips an
- * entry outright when nothing in its schema is volatile). Older providers have
- * no concept of volatility, and the compat layer strips the marker before
- * handing the schema to them, so this stays inert on every host generation.
+ * Every field is marked `volatile` because DSH 0.2.1 builds settings forms from
+ * volatile fields only (`volatileForm` in `dsh-settings` skips an entry outright
+ * when nothing in its schema is volatile). This plugin disables the generated
+ * page in favour of its own card, but the marker still keeps the values live: a
+ * volatile field is re-read from the settings document instead of being frozen at
+ * composition time.
  *
- * The public type stays the plain `Config` shape for plugin consumers; the
- * loader resolves these top-level fields to volatile references, which
- * `unwrapConfig` collapses back at every read.
+ * The public type stays the plain `Config` shape for plugin consumers; the loader
+ * resolves these top-level fields to volatile references, which `unwrapConfig`
+ * collapses back at every read.
  */
 export const Config: z<Config> = z.object({
   authFile: z.string().description('CodeBuddy CLI auth file (defaults to the CLI\'s own location)').volatile(),
@@ -195,10 +196,19 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const catalog = new CodeBuddyCatalog()
   const shim = createCodeBuddyShim({ store, client, catalog, logger: ctx.logger })
 
-  // The authoritative configuration read. Reassigned below whenever the
-  // settings document changes, so every consumer that reads through this thunk
-  // sees live edits without re-registering anything.
-  let current = (): Config => config
+  // The authoritative configuration read. The settings document is the source
+  // of truth once it exists, so read the live section on every call rather than
+  // keeping the value DSH passed at startup: a live edit would otherwise keep
+  // serving the startup snapshot until the host restarts.
+  const readLiveConfig = (): Config => {
+    const settings = ctx.get('settings')
+    if (settings === undefined) return config
+    const namespace = settingsCompatNamespace(ctx)
+    const descriptor = settings.describe().find(entry => String(entry.ns) === namespace)
+    if (descriptor === undefined) return config
+    return unwrapConfig(descriptor.value)
+  }
+  let current = (): Config => readLiveConfig()
   const enabledModels = (): readonly string[] | undefined => current().enabledModels
 
   /**
@@ -234,22 +244,16 @@ export function apply(ctx: Context, rawConfig: Config): void {
     resolveIdentity: () => ensureClientIdentity(),
   }))
 
-  // The settings section keeps the configured auth-file path live across edits
-  // and, on hosts with an installer, contributes the section itself. DSH 0.1.7
-  // replaced both installers with managed forms derived from the volatile
-  // Config above, so `installSettingsSectionCompat` picks whichever generation
-  // is present instead of assuming one. Without a settings service the plugin
-  // still serves its models; it simply has no user-editable section.
-  installSettingsSectionCompat(ctx, CODEBUDDY_SETTINGS_NS, Config, config, {
-    setSource(source) {
-      // A source thunk may hand back volatile references, so normalize on every
-      // read rather than trusting the shape it returns.
-      current = () => unwrapConfig(source())
-    },
-    onChange() {
-      const next = current().authFile
-      store.setCliPath(next)
-    },
+  // The settings section keeps the configured auth-file path live across edits.
+  // DSH 0.2.1 derives forms from the volatile Config above and removed both
+  // older installers, so the plugin only declares its custom-page policy here.
+  // Without a settings service the plugin still serves its models; it simply has
+  // no user-editable section.
+  installSettingsSectionCompat(ctx, CODEBUDDY_SETTINGS_NS, () => {
+    // A live edit lands in the settings document with only the namespace in the
+    // event payload, so re-read the section rather than trusting a pushed value.
+    const next = current().authFile
+    store.setCliPath(next)
   })
 
   let stopped = false
@@ -283,11 +287,11 @@ export function apply(ctx: Context, rawConfig: Config): void {
           releaseDirectory = ctx.llm.registerConfigurableProviders([{
             provider: CODEBUDDY_PROVIDER,
             displayName: 'CodeBuddy',
-            // Must be the resolved namespace, not the constant: on 0.1.7+ the
-            // provider stores this family's config under the Loader entry id
-            // (`llm-codebuddy-cli`). Declaring the legacy constant here pointed
-            // the Models page at a section the writes never touch, so a saved
-            // selection read back as unset.
+            // Must be the resolved namespace, not the constant: with managed
+            // forms the provider stores this family's config under the Loader
+            // entry id (`llm-codebuddy-cli`). Declaring the legacy constant here
+            // pointed the Models page at a section the writes never touch, so a
+            // saved selection read back as unset.
             settingsNs: settingsCompatNamespace(ctx),
             settingsPath: [],
             declared: false,

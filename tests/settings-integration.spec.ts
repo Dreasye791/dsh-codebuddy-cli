@@ -4,22 +4,34 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as CodeBuddy from '../src/index.ts'
 
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
+/**
+ * Minimal stand-in for the settings service.
+ *
+ * DSH 0.2.1's real `SettingsForms` injects the host's `configEditor` and
+ * `profileContext`, neither of which exists outside a booted profile — so a test
+ * that mounted the real provider would fail on host plumbing rather than on this
+ * plugin. This fake exposes exactly the surface the plugin uses (`describe` and
+ * `update`) and stores edits so a write can be read back.
+ */
+function mountMemorySettings(ctx: Context): void {
+  let value: Record<string, unknown> = {}
+  ctx.provide('settings', {
+    describe: () => [{
+      ns: CodeBuddy.CODEBUDDY_SETTINGS_NS as SettingsNamespace,
+      value: structuredClone(value),
+      revision: 1,
+      autoGenerate: false,
+      applies: 'live',
+    }],
+    update: async (ns: string, patch: Record<string, unknown>) => {
+      if (ns !== CodeBuddy.CODEBUDDY_SETTINGS_NS) return
+      value = { ...value, ...patch }
+    },
+    configure: () => () => {},
+  } as never)
 }
 
 let context: Context | undefined
@@ -40,7 +52,7 @@ describe('CodeBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    mountMemorySettings(ctx)
     await ctx.plugin(CodeBuddy, {})
 
     // Registration rides on the loopback shim's listening event.
@@ -110,7 +122,7 @@ describe('CodeBuddy Host settings integration', () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
+    mountMemorySettings(ctx)
     await ctx.plugin(CodeBuddy, {})
 
     await vi.waitFor(() => {

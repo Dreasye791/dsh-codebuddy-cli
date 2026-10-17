@@ -23,9 +23,11 @@
 
 前置：已安装 CodeBuddy CLI 并登录（插件复用 CLI 的登录状态，重新登录自动跟随）。
 
-本插件面向 **DSH `0.1.2-rc.1` 及以上**，与旧版核心（如 `0.1.1-rc.2`）不兼容。
+本插件面向 **DSH `0.2.1-rc.2` 及以上**（`<0.3.0`）。
 
-同时兼容 `0.1.2`、`0.1.5` 与 `0.1.7+` 三代宿主：`0.1.5` 起 `llm-pi-ai` 为路由 profile 新增了必需的 `modelErrors` 字段，插件会一并提供；`0.1.7` 起设置页改为由插件 Loader 入口的 Config schema 推导的托管表单，原先的 `installSettingsSection` / `settings.installSection` 安装器均已移除，插件在运行时自动识别宿主代次并选择对应写法。旧版宿主忽略未知字段，因此同一份构建产物在各代宿主上均可正常工作。
+`0.4.0` 起只支持这一代宿主：DSH `0.2.1` 移除了两代设置安装器（`installSettingsSection` / `settings.installSection`），改为依据插件 Loader 入口的 Config schema 推导托管表单，并把 `settings.plugins.tab` 插槽的类型声明挪到了 settings shell；`SettingsForms` 服务也新增了 `configEditor` / `profileContext` 两个必需注入。插件已按这套约定重写，并通过 `engines.dsh` 声明适用的宿主范围。
+
+**仍在使用 DSH `0.1.x` 的用户请安装 `0.3.0`**（`npm i dsh-codebuddy-cli@0.3.0`）：那一版内置三代宿主兼容层，可在 `0.1.2`、`0.1.5`、`0.1.7+` 上运行。新版本不再向下兼容旧宿主，反之亦然。
 
 ```sh
 # Web（推荐，自带预构建产物）
@@ -72,7 +74,7 @@ dsh plugin --profile web exec dsh-codebuddy-cli logout                          
 
 ## 已知限制
 
-- 在 **Windows** 的 DSH Web profile（`0.1.2-rc.1`+、Node 22+）下验证通过；macOS / Linux 走同样的目录探测逻辑但未做实测。WSL 需保证 Windows 环境变量可见，否则请用 `CODEBUDDY_CLI_AUTH_FILE` 指定实际位置。
+- 在 **Windows** 的 DSH Web profile（`0.2.1-rc.2`、Node 22+）下验证通过；macOS / Linux 走同样的目录探测逻辑但未做实测。WSL 需保证 Windows 环境变量可见，否则请用 `CODEBUDDY_CLI_AUTH_FILE` 指定实际位置。
 - 依赖 CodeBuddy CLI 的客户端接口（非官方开放 API），CLI 更新后插件可能需要随之调整。
 - 模型清单以每次启动 DSH 时拉取的服务端数据为准；拉取失败时回退到内置的静态清单（15 个模型），保证首次进入即可选模型。
 - 粘贴 Token 添加账号**不适用于**密码登录与企业 SSO：这两种方式都必须走浏览器交互，Token 无法替代。同时，若服务端已把该会话标记为失效（返回 `12153 Offline user session not found`），则 `access_token` 与 `refresh_token` 会一起失效，只能重新登录后再粘贴。

@@ -23,7 +23,11 @@ Reuse the CodeBuddy CLI (CodeBuddy Code) sign-in to bring its models (GLM-5.3, G
 
 Prerequisite: the CodeBuddy CLI is installed and signed in (the plugin reuses that sign-in).
 
-This plugin targets **DSH `0.1.2-rc.1` and above** and is not compatible with older cores (e.g. `0.1.1-rc.2`).
+This plugin targets **DSH `0.2.1-rc.2` and above** (below `0.3.0`).
+
+Since `0.4.0` it supports only that generation: DSH `0.2.1` removed both settings installers (`installSettingsSection` / `settings.installSection`) in favour of managed forms derived from the plugin's Loader-entry Config schema, moved the `settings.plugins.tab` slot type into the settings shell, and made `SettingsForms` inject `configEditor` / `profileContext`. The plugin follows that contract and declares its host range through `engines.dsh`.
+
+**Still on DSH `0.1.x`? Install `0.3.0` instead** (`npm i dsh-codebuddy-cli@0.3.0`): that release carries the three-generation compatibility layer and runs on `0.1.2`, `0.1.5` and `0.1.7+`. Newer releases no longer support older hosts, and vice versa.
 
 ```sh
 # Web (recommended, ships prebuilt artifacts)
@@ -70,7 +74,7 @@ dsh plugin --profile web exec dsh-codebuddy-cli logout                          
 
 ## Known limitations
 
-- Verified on the **Windows** DSH Web profile (`0.1.2-rc.1`+, Node 22+); macOS and Linux follow the same directory-probing logic but are untested. Under WSL the Windows environment variables must be visible, or set `CODEBUDDY_CLI_AUTH_FILE` explicitly.
+- Verified on the **Windows** DSH Web profile (`0.2.1-rc.2`, Node 22+); macOS and Linux follow the same directory-probing logic but are untested. Under WSL the Windows environment variables must be visible, or set `CODEBUDDY_CLI_AUTH_FILE` explicitly.
 - Relies on the CodeBuddy CLI's client interface (not an official open API); CLI updates may require plugin adjustments.
 - The model list comes from the server and is refreshed on every DSH start; if that fetch fails the plugin falls back to its built-in static list (15 models) so models are selectable from the first launch.
 
