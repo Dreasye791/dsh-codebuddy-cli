@@ -5,11 +5,17 @@
  * statistics, styled to read as one family (tertiary 13px text, tabular
  * numbers, same variable palette).
  *
- * The row is always present, whatever the session has selected: it names the
- * current provider and model, and for a CodeBuddy selection prefixes the
- * remaining credit and appends the model's billing multiplier. Loading,
- * signed-out and error states each have their own wording rather than
- * collapsing the row, so the composer's layout never shifts.
+ * The row is present whenever the session is on this plugin's provider: it
+ * names the current provider and model, prefixes the remaining credit and
+ * appends the model's billing multiplier. Loading, signed-out and error states
+ * each have their own wording rather than collapsing the row, so the composer's
+ * layout never shifts while a CodeBuddy model stays selected.
+ *
+ * With any other provider selected the row renders nothing instead. It would
+ * carry no CodeBuddy figure there — only the provider and model name, which the
+ * composer's model picker already shows — and the dock is a shared flex line:
+ * an extra full-width segment pushed the host's session-stats segments into
+ * ellipsis when another widget contributed to the same row (#6).
  *
  * Clicking opens a small menu-surface panel (same surface vocabulary as the
  * composer's context-occupancy panel) with per-package progress rows, the
@@ -190,11 +196,11 @@ function PackageRow({ account, t }: {
  * The composer dock entry: reads the session's `modelSelection` projection and
  * hands the current provider verdict to the always-mounted {@link CreditDockBody}.
  *
- * There is deliberately no provider gate here — unmounting the body would drop
- * the composer's row whenever the user picked a non-CodeBuddy model. The body
- * instead switches its own behaviour on `codeBuddy`: outside this plugin's
- * provider it starts no status request, keeps no interval and closes the panel,
- * while still rendering the provider/model row.
+ * There is deliberately no provider gate at this level: the body keeps its hooks
+ * mounted across provider switches so `codeBuddy` can flip without changing the
+ * hook order. The body switches its own behaviour on that flag — outside this
+ * plugin's provider it starts no status request, keeps no interval, closes the
+ * panel and renders nothing.
  */
 export function CodeBuddyCreditDock({ useProjection, useSession, t }: CodeBuddyCreditDockProps) {
   if (t === undefined) throw new Error('CodeBuddy credit dock requires its translation function')
@@ -294,6 +300,16 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [open])
+
+  // The row is CodeBuddy-only. With another provider selected it carries no
+  // credit figure and no multiplier — just the provider and model name, which
+  // the composer's own model picker already shows — while still claiming a full
+  // row of the shared dock flex line. That squeezed the host's session-stats
+  // segments (rounds, token usage) into ellipsis whenever another widget also
+  // contributed to the same row, so the row is dropped instead of padded
+  // (#6). Every hook above has already run, so returning here keeps the hook
+  // order stable; only the rendered output changes.
+  if (!codeBuddy) return null
 
   const line = buildDockLine(selection, load)
   const lineText = renderDockSegments(line.segments, t)

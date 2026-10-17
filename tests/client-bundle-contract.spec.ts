@@ -53,4 +53,12 @@ maybe('built client bundle slot + icon contract', () => {
   it('imports the current primitive icon name that the host actually exports', () => {
     expect(bundle).toContain('IconChevronDownOutlineRegular')
   })
+
+  it('renders the dock row only for this plugin provider', () => {
+    // The dock shares a flex line with the host's session-stats strip, so an
+    // extra row on a foreign provider squeezed the rounds/token segments into
+    // ellipsis (#6). The row must therefore bail out before rendering rather
+    // than fall through to a provider/model-only line.
+    expect(bundle).toMatch(/if \(!codeBuddy\)\s*return null/)
+  })
 })
