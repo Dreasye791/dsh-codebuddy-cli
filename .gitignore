@@ -5,3 +5,5 @@ coverage/
 AGENTS.md
 docs/verification/session-cookie.txt
 docs/verification/_probe.cjs
+.idea/
+.codebuddy/
