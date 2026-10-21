@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostIsLoopback, hostnameOfHost, originIsLoopback } from '../src/loopback.ts'
+import { hostIsLoopback, hostnameOfHost, isTrustedLocalRequest, originIsLoopback } from '../src/loopback.ts'
 
 describe('hostnameOfHost', () => {
   it('strips the port from an IPv4 host', () => {
@@ -56,5 +56,28 @@ describe('originIsLoopback', () => {
     expect(originIsLoopback('http://evil.example')).toBe(false)
     expect(originIsLoopback('http://127.0.0.1.evil.example')).toBe(false)
     expect(originIsLoopback('not a url')).toBe(false)
+  })
+})
+
+describe('isTrustedLocalRequest', () => {
+  it('still requires a loopback Host', () => {
+    expect(isTrustedLocalRequest({ host: 'evil.example:3080' })).toBe(false)
+    expect(isTrustedLocalRequest({ host: undefined })).toBe(false)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080' })).toBe(true)
+    expect(isTrustedLocalRequest({ host: 'localhost:3080' })).toBe(true)
+  })
+
+  it('applies the Origin check whenever an Origin is present', () => {
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', origin: 'http://evil.example' })).toBe(false)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' })).toBe(true)
+  })
+
+  it('passes an absent Origin unless the request is marked cross-site', () => {
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080' })).toBe(true)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'none' })).toBe(true)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'same-origin' })).toBe(true)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'Cross-Site' })).toBe(false)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'same-site' })).toBe(false)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': ['cross-site', 'x'] })).toBe(false)
   })
 })

@@ -162,6 +162,25 @@ export function formatCreditTotal(total: number): string {
 }
 
 /**
+ * The per-turn piece of a CodeBuddy line: credit consumed by the turn that
+ * just finished.
+ *
+ * The figure is a difference of two remaining-credit readings — the one taken
+ * when the previous turn settled and the one taken when this turn settled — so
+ * it needs no new upstream call and no session-log parsing. It is null until a
+ * turn has both bounds measured (the first turn of a session, or any turn
+ * whose billing answer was unavailable), and the caller then leaves the
+ * segment out rather than showing a placeholder.
+ *
+ * @param turnSpent - credits consumed by the last finished turn, or null.
+ * @returns a copy segment, or null when there is nothing to show.
+ */
+export function turnSegment(turnSpent: number | null): CodeBuddyDockSegment | null {
+  if (turnSpent === null || !(turnSpent > 0)) return null
+  return { kind: 'copy', key: 'creditTurnSpent', params: { credits: formatCreditTotal(turnSpent) } }
+}
+
+/**
  * The dock's status-read state machine.
  *
  * `idle` is the state for a non-CodeBuddy session: the dock never asks this
@@ -228,6 +247,7 @@ function creditSegment(load: CodeBuddyDockLoad, credits: CodeBuddyCreditLine | n
 export function buildDockLine(
   selection: CodeBuddyModelSelectionProjection | undefined,
   load: CodeBuddyDockLoad,
+  turnSpent: number | null = null,
 ): CodeBuddyDockLine {
   const current = currentModelSelection(selection)
   const codeBuddy = isCodeBuddySelection(selection)
@@ -235,7 +255,12 @@ export function buildDockLine(
   const credits = codeBuddy && status?.status === 'signed-in' ? buildCreditLine(status.credits) : null
   const rate = codeBuddy ? currentCodeBuddyRate(selection, status?.catalog) : null
   const segments: CodeBuddyDockSegment[] = []
-  if (codeBuddy) segments.push(creditSegment(load, credits))
+  if (codeBuddy) {
+    // Per-turn figure leads: it is the number a user checks right after a turn.
+    const spent = turnSegment(turnSpent)
+    if (spent !== null) segments.push(spent)
+    segments.push(creditSegment(load, credits))
+  }
   if (current === null) {
     segments.push({ kind: 'copy', key: 'dockNoModel' })
     return { segments, codeBuddy, credits, rate }

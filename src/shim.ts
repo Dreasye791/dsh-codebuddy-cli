@@ -21,7 +21,8 @@ import { Readable } from 'node:stream'
 import type { CodeBuddyCredentialStore } from './auth.ts'
 import type { CodeBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
-import { prepareChatBody, CodeBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { conversationHeaders, prepareChatBody, CodeBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { sessionIdOf } from './turns.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -52,6 +53,15 @@ export interface CodeBuddyShimOptions {
   client: Pick<CodeBuddyUpstreamClient, 'chatStream'>
   catalog: CodeBuddyCatalog
   logger?: ShimLogger
+  /**
+   * Resolve the current turn id for a session.
+   *
+   * Supplied by the plugin so the turn boundary comes from the agent loop
+   * rather than from the request body; see `src/turns.ts` for why the body is
+   * not a reliable source. Omitted in tests and in headless use, where the
+   * shim then falls back to the body fingerprint.
+   */
+  turnIdFor?: (sessionId: string | undefined) => string | undefined
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -108,6 +118,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShim {
   const { store, client, catalog } = options
   const logger = options.logger
+  const turnIdFor = options.turnIdFor
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
@@ -211,11 +222,16 @@ export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShi
     }
 
     const raw = (await readBody(req)).toString('utf8')
+    // Derive the turn context from the body BEFORE prepareChatBody rewrites
+    // roles/tool_choice: the fallback fingerprint only needs the messages
+    // array, but reading the original keeps it independent of those rewrites.
+    // The tracker's turn id (when the loop has one) wins over the fingerprint.
+    const turnHeaders = conversationHeaders(req.headers, raw, turnIdFor?.(sessionIdOf(req.headers)))
     const prepared = prepareChatBody(raw)
 
     const controller = new AbortController()
     req.on('close', () => controller.abort())
-    const result = await client.chatStream(credential, prepared, controller.signal)
+    const result = await client.chatStream(credential, prepared, controller.signal, turnHeaders)
 
     if (!result.ok) {
       writeOpenAIError(

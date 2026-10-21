@@ -221,11 +221,25 @@ describe('enabled-model write route', () => {
     expect(response.status).toBe(405)
   })
 
-  it('requires an Origin header on the mutating route', async () => {
+  it('accepts an absent Origin on the mutating route when nothing marks it cross-site', async () => {
     const port = await startWriteServer(deps({}))
     const response = await postOnce({
       port,
       headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ enabledModels: [] }),
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it('drops an absent Origin that a browser marked cross-site', async () => {
+    const port = await startWriteServer(deps({}))
+    const response = await postOnce({
+      port,
+      headers: {
+        host: `127.0.0.1:${String(port)}`,
+        'content-type': 'application/json',
+        'sec-fetch-site': 'cross-site',
+      },
       body: JSON.stringify({ enabledModels: [] }),
     })
     expect(response.status).toBe(403)

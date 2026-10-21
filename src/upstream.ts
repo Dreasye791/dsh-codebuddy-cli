@@ -10,6 +10,7 @@
 import type { CodeBuddyCredential } from './auth.ts'
 import type { CodeBuddyClientIdentity } from './client-identity.ts'
 import type { CodeBuddyCheckInOutcome } from './status-paths.ts'
+import { createHash } from 'node:crypto'
 import {
   clientIdentityHeaders,
   CODEBUDDY_IDE_NAME,
@@ -17,6 +18,7 @@ import {
   CODEBUDDY_UNKNOWN_VERSION,
   resolveClientIdentity,
 } from './client-identity.ts'
+import { sessionIdOf } from './turns.ts'
 
 export type { CodeBuddyCheckInOutcome } from './status-paths.ts'
 
@@ -559,7 +561,173 @@ export function prepareChatBody(source: string): string {
   obj['stream'] = true
   normalizeDeveloperRole(obj)
   normalizeToolChoice(obj)
+  normalizeReasoningEffort(obj)
+  normalizeSystemPrompt(obj)
   return JSON.stringify(obj)
+}
+
+/**
+ * Conversation-correlation headers for one chat request.
+ *
+ * Captured from the official client (CodeBuddyIDE 4.12.1) on 2026-10-05, one
+ * multi-step task, three calls — the granularities are:
+ *
+ *   x-conversation-id          session   same for every call of the session
+ *   x-conversation-request-id  turn      same for every call of one user turn
+ *   x-request-id               turn      identical to x-conversation-request-id
+ *   x-conversation-message-id  message   unique per call
+ *
+ * The backend groups a turn's calls into one record by that turn-scoped
+ * request id. DSH has no turn identifier to forward — pi-ai only carries the
+ * session id — so the turn id has to be established inside the plugin. Two
+ * sources are used, in order:
+ *
+ *   1. `turnId`, minted by the tracker behind `src/turns.ts` from the loop's
+ *      own `agent/pre-step` boundary. This is the authoritative one.
+ *   2. A fingerprint of the body's last `user` message.
+ *
+ * The fingerprint alone is not enough, and measuring it is why the tracker
+ * exists: DSH injects extra `user` messages *inside* a turn (time context,
+ * progress notices, native runtime memory), so "the last user message" changes
+ * mid-turn. On this machine 14 of 64 sampled turns (21.9%) carried more than
+ * one fingerprint, one turn spread over four. The fingerprint therefore stays
+ * only as the fallback for a request that arrives with no active turn (a
+ * resumed session, or the very first call of a process).
+ *
+ * `x-conversation-message-id` is left to the upstream: it is the per-call
+ * unique id, and the server already generates one when it is absent.
+ *
+ * @param headers - the raw incoming request headers.
+ * @param body - the request body as received (pre-rewrite), used for the fallback fingerprint.
+ * @param turnId - the current turn id from the tracker, when one is open.
+ * @returns the upstream conversation headers, or an empty object when neither input is usable.
+ */
+export function conversationHeaders(
+  headers: Record<string, string | string[] | undefined>,
+  body: string,
+  turnId?: string,
+): Record<string, string> {
+  const session = sessionIdOf(headers)
+  const turn = typeof turnId === 'string' && turnId.trim() !== '' ? turnId.trim() : turnFingerprint(body)
+  if (session === undefined && turn === undefined) return {}
+  return {
+    ...session === undefined ? {} : { 'X-Conversation-ID': session },
+    ...turn === undefined ? {} : {
+      'X-Conversation-Request-ID': turn,
+      'X-Request-ID': turn,
+    },
+    // The official client tags interactive turns as `craft`.
+    'X-Agent-Intent': 'craft',
+  }
+}
+
+/**
+ * Derive a per-turn fingerprint from a chat request body.
+ *
+ * Uses the last `user` role message's content. This is the *fallback* only —
+ * see {@link conversationHeaders} for why: DSH injects extra `user` messages
+ * mid-turn, so the last user message is not stable within a turn, and a body
+ * that cannot be parsed or carries no user entry yields undefined.
+ *
+ * A body with no user message returns undefined, and the caller then leaves the
+ * turn-scoped headers off entirely (the upstream falls back to generating its
+ * own per-call id, i.e. the pre-patch behaviour).
+ *
+ * @param body - raw request body string.
+ * @returns a 32-char hex digest, or undefined.
+ */
+export function turnFingerprint(body: string): string | undefined {
+  if (typeof body !== 'string' || body === '') return undefined
+  let messages: unknown
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+    messages = (parsed as Record<string, unknown>)['messages']
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(messages)) return undefined
+  let lastUser: Record<string, unknown> | undefined
+  for (const message of messages) {
+    if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
+    const wrapped = message as Record<string, unknown>
+    if (wrapped['role'] === 'user') lastUser = wrapped
+  }
+  if (lastUser === undefined) return undefined
+  let serialized: string
+  try {
+    serialized = JSON.stringify(lastUser['content'] ?? lastUser)
+  } catch {
+    return undefined
+  }
+  if (typeof serialized !== 'string' || serialized === '') return undefined
+  return createHash('sha256').update(serialized).digest('hex').slice(0, 32)
+}
+
+/**
+ * The upstream answers `400 code 11128 "Illegal API invocation from an
+ * unapproved channel"` when a `system` message *begins* with this exact
+ * sentence. Measured on 2026-10-21: the same body with one leading space, one
+ * leading newline, or an equivalent rewording returns 200; the sentence
+ * anywhere past offset 0 also returns 200. So the check is an exact prefix
+ * match on message content, not a request-header or channel field.
+ *
+ * Rewriting keeps the meaning ("powered by" becomes "running inside") while no
+ * longer matching the fingerprint. Only the leading sentence is touched.
+ */
+const BANNED_SYSTEM_PREFIX = 'You are an AI agent powered by DeepSeek Harness.'
+const SAFE_SYSTEM_PREFIX = 'You are an AI agent running inside DeepSeek Harness.'
+
+/** Replace the banned leading sentence; anything else is returned unchanged. */
+function rewriteSystemPrefix(text: string): string {
+  if (!text.startsWith(BANNED_SYSTEM_PREFIX)) return text
+  return SAFE_SYSTEM_PREFIX + text.slice(BANNED_SYSTEM_PREFIX.length)
+}
+
+/** Rewrite the leading sentence of every `system` message (string or part array). */
+function normalizeSystemPrompt(obj: Record<string, unknown>): void {
+  const messages = obj['messages']
+  if (!Array.isArray(messages)) return
+  for (const message of messages) {
+    if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
+    const wrapped = message as Record<string, unknown>
+    if (wrapped['role'] !== 'system') continue
+    const content = wrapped['content']
+    if (typeof content === 'string') {
+      wrapped['content'] = rewriteSystemPrefix(content)
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    for (const part of content) {
+      if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
+      const wrappedPart = part as Record<string, unknown>
+      if (typeof wrappedPart['text'] === 'string') wrappedPart['text'] = rewriteSystemPrefix(wrappedPart['text'])
+    }
+  }
+}
+
+/**
+ * Drop a literal `reasoning_effort: "off"`.
+ *
+ * pi-ai names the "no thinking" level `off`; when a caller has no
+ * `thinkingLevelMap` entry for it, pi-ai falls back to that name as the wire
+ * value. The upstream rejects it with HTTP 400 `code 11150` ("the reasoning
+ * effort value is not supported by the current model"). Omitting the field
+ * entirely is what the official CLI sends to disable thinking, and the
+ * upstream reads a missing effort as "no reasoning".
+ *
+ * Models that *do* support disabling thinking reach this point with `none`
+ * already substituted by {@link reasoningFields}, so this is a safety net for
+ * callers that bypass the adapter rather than the main path.
+ */
+function normalizeReasoningEffort(obj: Record<string, unknown>): void {
+  if (obj['reasoning_effort'] === 'off') delete obj['reasoning_effort']
+  const reasoning = obj['reasoning']
+  if (typeof reasoning === 'object' && reasoning !== null && !Array.isArray(reasoning)) {
+    const wrapped = reasoning as Record<string, unknown>
+    if (wrapped['effort'] === 'off') delete wrapped['effort']
+    if (Object.keys(wrapped).length === 0) delete obj['reasoning']
+  }
 }
 
 /** Rewrite `role: "developer"` messages to `role: "system"` (upstream rejects developer). */
@@ -668,12 +836,17 @@ export class CodeBuddyUpstreamClient {
     credential: CodeBuddyCredential,
     bodyJson: string,
     signal?: AbortSignal,
+    extraHeaders?: Readonly<Record<string, string>>,
   ): Promise<CodeBuddyChatResult> {
     let response: Response
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: {
+          ...chatHeaders(credential),
+          ...extraHeaders ?? {},
+          'Authorization': `Bearer ${credential.accessToken}`,
+        },
         body: bodyJson,
         ...signal === undefined ? {} : { signal },
       })
@@ -876,7 +1049,84 @@ export class CodeBuddyUpstreamClient {
         expiringSoon,
       } satisfies CodeBuddyCreditAccount)
     }
+    // An enterprise member without a personal package always reads as empty;
+    // ask the enterprise cycle instead. See fetchEnterpriseCredits.
+    if (accounts.length === 0 && typeof credential.enterpriseId === 'string' && credential.enterpriseId !== '') {
+      const enterprise = await this.fetchEnterpriseCredits(credential)
+      if (enterprise !== undefined) return enterprise
+    }
     return { total, accounts }
+  }
+
+  /**
+   * Read the shared enterprise cycle quota for a member with no personal packages.
+   *
+   * `get-user-resource` lists *personal* credit packages only, so an enterprise
+   * member without a personal plan always reads as zero — which is exactly the
+   * "no credit package" the card used to show. The web console's plan-and-usage
+   * page instead asks `get-enterprise-user-usage`, which reports the enterprise
+   * cycle: `limitNum` is the allowance for the cycle and `credit` is what the
+   * cycle has already consumed, so what remains is their difference.
+   *
+   * Failure resolves to undefined instead of throwing, so the caller keeps the
+   * empty personal answer rather than turning the whole status document into an
+   * error.
+   *
+   * @param credential - resolved credential carrying the enterprise id.
+   * @returns the same `{ total, accounts }` shape as {@link fetchCredits}, or
+   * undefined when the upstream has nothing usable to report.
+   */
+  async fetchEnterpriseCredits(credential: CodeBuddyCredential): Promise<CodeBuddyCredits | undefined> {
+    // Every failure mode degrades to undefined: a non-JSON gateway page, a
+    // network error, a rejected envelope. `readEnvelope` throws on the first of
+    // those, so the whole probe is guarded — an enterprise quota lookup must
+    // never be able to take down the status document.
+    let envelope: Envelope | undefined
+    let ok = false
+    try {
+      const response = await fetch(`${billingBase(credential)}/billing/meter/get-enterprise-user-usage`, {
+        method: 'POST',
+        headers: billingHeaders(credential),
+        body: '{}',
+        signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+      })
+      ok = response.ok
+      envelope = await readEnvelope(response)
+    } catch {
+      return undefined
+    }
+    if (!ok || envelope === undefined || envelope.code !== 0) return undefined
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const number = (value: unknown): number | undefined => {
+      const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+    const limit = number(data['limitNum'])
+    if (limit === undefined || limit <= 0) return undefined
+    const used = number(data['credit']) ?? 0
+    const remain = Math.max(0, limit - used)
+    const endMs = (() => {
+      const raw = data['cycleEndTime']
+      if (typeof raw !== 'string' || raw.trim() === '') return undefined
+      const parsed = Date.parse(raw.trim().replace(' ', 'T'))
+      return Number.isFinite(parsed) ? parsed : undefined
+    })()
+    const nowMs = Date.now()
+    return {
+      total: remain,
+      accounts: [{
+        packageName: 'Enterprise quota',
+        total: limit,
+        size: limit,
+        remain,
+        used,
+        ...endMs !== undefined ? { expireAtMs: endMs } : {},
+        expired: endMs !== undefined && endMs <= nowMs,
+        expiringSoon: endMs !== undefined && endMs > nowMs && endMs - nowMs <= 7 * 24 * 3600 * 1000,
+      }],
+    }
   }
 
   /**

@@ -8,6 +8,7 @@ import {
   formatCompactCredits,
   isCodeBuddySelection,
   renderDockSegments,
+  turnSegment,
 } from '../src/client/credit-line.ts'
 import type { CodeBuddyDockLoad, CodeBuddyModelSelectionProjection } from '../src/client/credit-line.ts'
 import { en } from '../src/client/locales.ts'
@@ -166,23 +167,25 @@ describe('provider id sync', () => {
   })
 })
 
-describe('buildDockLine', () => {
-  const catalog = {
-    rates: { 'glm-5.3': 'x0.79', 'glm-5.3-flash': 'x0.06' },
-    names: { 'glm-5.3': 'GLM-5.3', 'glm-5.3-flash': 'GLM-5.3-Flash' },
-  }
-  const signedIn = (credits?: { total: number, accounts: { packageName: string, remain: number, size: number }[] }): CodeBuddyDockLoad => ({
-    phase: 'ok',
-    value: { status: 'signed-in', ...credits === undefined ? {} : { credits }, catalog },
-  })
-  const withCredit = signedIn({ total: 1_642, accounts: [{ packageName: '主包', remain: 1_642, size: 2_000 }] })
+const catalog = {
+  rates: { 'glm-5.3': 'x0.79', 'glm-5.3-flash': 'x0.06' },
+  names: { 'glm-5.3': 'GLM-5.3', 'glm-5.3-flash': 'GLM-5.3-Flash' },
+}
 
-  /** Render through the English table so the assertions read like the UI. */
-  const render = (segments: readonly { kind: string }[]): string => renderDockSegments(
-    segments as Parameters<typeof renderDockSegments>[0],
-    (key: CodeBuddyCreditKey, params?: Record<string, unknown>) => Object.entries(params ?? {})
-      .reduce<string>((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), en[key]),
-  )
+const signedIn = (credits?: { total: number, accounts: { packageName: string, remain: number, size: number }[] }): CodeBuddyDockLoad => ({
+  phase: 'ok',
+  value: { status: 'signed-in', ...credits === undefined ? {} : { credits }, catalog },
+})
+
+/** Render through the English table so the assertions read like the UI. */
+const render = (segments: readonly { kind: string }[]): string => renderDockSegments(
+  segments as Parameters<typeof renderDockSegments>[0],
+  (key: CodeBuddyCreditKey, params?: Record<string, unknown>) => Object.entries(params ?? {})
+    .reduce<string>((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), en[key]),
+)
+
+describe('buildDockLine', () => {
+  const withCredit = signedIn({ total: 1_642, accounts: [{ packageName: '主包', remain: 1_642, size: 2_000 }] })
 
   it('shows credit, provider, model and rate for a CodeBuddy selection', () => {
     const line = buildDockLine({
@@ -192,7 +195,7 @@ describe('buildDockLine', () => {
     expect(line.codeBuddy).toBe(true)
     expect(line.credits?.total).toBe(1_642)
     expect(line.rate).toEqual({ rate: 'x0.79', name: 'GLM-5.3' })
-    expect(render(line.segments)).toBe('Credits 1,642 · Provider CodeBuddy · Model GLM-5.3 · x0.79')
+    expect(render(line.segments)).toBe('Credits 1,642 · CodeBuddy · GLM-5.3 · x0.79')
   })
 
   it('follows the next selection over lastUsed', () => {
@@ -201,7 +204,7 @@ describe('buildDockLine', () => {
       next: { provider: CODEBUDDY_PROVIDER_ID, model: 'glm-5.3-flash' },
     }, withCredit)
     expect(line.rate).toEqual({ rate: 'x0.06', name: 'GLM-5.3-Flash' })
-    expect(render(line.segments)).toContain('Model GLM-5.3-Flash')
+    expect(render(line.segments)).toContain('GLM-5.3-Flash')
   })
 
   it('omits the rate for a CodeBuddy model the catalog does not price', () => {
@@ -211,7 +214,7 @@ describe('buildDockLine', () => {
     }, withCredit)
     expect(line.rate).toBeNull()
     // Unknown to the catalog, so the routing id is echoed as the model name.
-    expect(render(line.segments)).toBe('Credits 1,642 · Provider CodeBuddy · Model auto')
+    expect(render(line.segments)).toBe('Credits 1,642 · CodeBuddy · auto')
   })
 
   it('shows provider and model for a foreign provider, with no credit and no rate', () => {
@@ -222,7 +225,7 @@ describe('buildDockLine', () => {
     expect(line.codeBuddy).toBe(false)
     expect(line.credits).toBeNull()
     expect(line.rate).toBeNull()
-    expect(render(line.segments)).toBe('Provider llm-pi-ai · Model gpt-4o')
+    expect(render(line.segments)).toBe('llm-pi-ai · gpt-4o')
   })
 
   it('never leaks a CodeBuddy rate onto a foreign model that shares an id', () => {
@@ -232,7 +235,7 @@ describe('buildDockLine', () => {
       next: { provider: 'llm-pi-ai', model: 'glm-5.3' },
     }, withCredit)
     expect(line.rate).toBeNull()
-    expect(render(line.segments)).toBe('Provider llm-pi-ai · Model glm-5.3')
+    expect(render(line.segments)).toBe('llm-pi-ai · glm-5.3')
   })
 
   it('keeps a placeholder row while no model is selected', () => {
@@ -247,7 +250,7 @@ describe('buildDockLine', () => {
       next: null,
     }, { phase: 'loading' })
     expect(line.credits).toBeNull()
-    expect(render(line.segments)).toBe('Credits … · Provider CodeBuddy · Model glm-5.3')
+    expect(render(line.segments)).toBe('Credits … · CodeBuddy · glm-5.3')
   })
 
   it('says not signed in rather than dropping the row', () => {
@@ -256,7 +259,7 @@ describe('buildDockLine', () => {
       next: null,
     }, { phase: 'ok', value: { status: 'signed-out' } })
     expect(line.credits).toBeNull()
-    expect(render(line.segments)).toBe('Credits — not signed in · Provider CodeBuddy · Model glm-5.3')
+    expect(render(line.segments)).toBe('Credits — not signed in · CodeBuddy · glm-5.3')
   })
 
   it('says unavailable for a failed read or a signed-in document with no billing answer', () => {
@@ -265,10 +268,10 @@ describe('buildDockLine', () => {
       next: null,
     }
     expect(render(buildDockLine(selection, { phase: 'error', message: 'HTTP 500' }).segments))
-      .toBe('Credits unavailable · Provider CodeBuddy · Model glm-5.3')
+      .toBe('Credits unavailable · CodeBuddy · glm-5.3')
     // Signed in, but the upstream billing call failed: still a readable row.
     expect(render(buildDockLine(selection, signedIn()).segments))
-      .toBe('Credits unavailable · Provider CodeBuddy · Model GLM-5.3 · x0.79')
+      .toBe('Credits unavailable · CodeBuddy · GLM-5.3 · x0.79')
   })
 
   it('shows a zero total instead of hiding an exhausted account', () => {
@@ -277,6 +280,47 @@ describe('buildDockLine', () => {
       next: null,
     }, signedIn({ total: 0, accounts: [] }))
     expect(line.credits?.empty).toBe(true)
-    expect(render(line.segments)).toBe('Credits 0 · Provider CodeBuddy · Model GLM-5.3 · x0.79')
+    expect(render(line.segments)).toBe('Credits 0 · CodeBuddy · GLM-5.3 · x0.79')
+  })
+})
+
+describe('turnSegment', () => {
+  it('renders the per-turn figure with thousands separators', () => {
+    expect(render([turnSegment(12.34) as never])).toBe('this turn 12.34')
+    expect(render([turnSegment(1_642) as never])).toBe('this turn 1,642')
+  })
+
+  it('stays out of the line when the turn consumed nothing measurable', () => {
+    // null: no baseline (first turn of a session, or a failed billing read).
+    // 0 and negatives: a cycle reset or an account switch mid-turn, which is
+    // not consumption — the row must not claim a turn spent nothing.
+    expect(turnSegment(null)).toBeNull()
+    expect(turnSegment(0)).toBeNull()
+    expect(turnSegment(-3)).toBeNull()
+    expect(turnSegment(Number.NaN)).toBeNull()
+  })
+
+  it('leads the CodeBuddy line, before the running total', () => {
+    const line = buildDockLine({
+      lastUsed: { provider: CODEBUDDY_PROVIDER_ID, model: 'glm-5.3' },
+      next: null,
+    }, signedIn({ total: 1_642, accounts: [{ packageName: '主包', remain: 1_642, size: 2_000 }] }), 5.5)
+    expect(render(line.segments)).toBe('this turn 5.5 · Credits 1,642 · CodeBuddy · GLM-5.3 · x0.79')
+  })
+
+  it('never appears on a foreign provider, even when a turn was measured', () => {
+    const line = buildDockLine({
+      lastUsed: { provider: 'llm-pi-ai', model: 'gpt-4o' },
+      next: null,
+    }, { phase: 'idle' }, 5.5)
+    expect(render(line.segments)).toBe('llm-pi-ai · gpt-4o')
+  })
+
+  it('defaults to no segment when the caller does not pass one', () => {
+    const line = buildDockLine({
+      lastUsed: { provider: CODEBUDDY_PROVIDER_ID, model: 'glm-5.3' },
+      next: null,
+    }, signedIn({ total: 1_642, accounts: [{ packageName: '主包', remain: 1_642, size: 2_000 }] }))
+    expect(render(line.segments)).toBe('Credits 1,642 · CodeBuddy · GLM-5.3 · x0.79')
   })
 })

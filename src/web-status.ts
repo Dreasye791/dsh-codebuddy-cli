@@ -17,7 +17,7 @@ import { normalizeCredits } from './upstream.ts'
 import { regionOf } from './upstream.ts'
 import { filterEnabledModels } from './catalog.ts'
 import type { CodeBuddyModelInfo } from './catalog.ts'
-import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { hostIsLoopback, isTrustedLocalRequest, originIsLoopback } from './loopback.ts'
 import { generateAccountId } from './oauth.ts'
 import {
   CODEBUDDY_CHECKIN_PATH,
@@ -518,12 +518,8 @@ export function codeBuddyEnabledModelsHandler(
       json(res, 405, { error: 'method not allowed' })
       return
     }
-    if (!hostIsLoopback(req.headers.host) || !originIsLoopback(req.headers.origin)) {
+    if (!isTrustedLocalRequest(req.headers)) {
       json(res, 403, { error: 'request-not-trusted' })
-      return
-    }
-    if (typeof req.headers.origin !== 'string') {
-      json(res, 403, { error: 'origin-required' })
       return
     }
     const type = req.headers['content-type']
@@ -619,12 +615,8 @@ export function codeBuddyCheckInHandler(
       json(res, 405, { error: 'method not allowed' })
       return
     }
-    if (!hostIsLoopback(req.headers.host) || !originIsLoopback(req.headers.origin)) {
+    if (!isTrustedLocalRequest(req.headers)) {
       json(res, 403, { error: 'request-not-trusted' })
-      return
-    }
-    if (typeof req.headers.origin !== 'string') {
-      json(res, 403, { error: 'origin-required' })
       return
     }
     const type = req.headers['content-type']
@@ -744,14 +736,10 @@ export function registerCodeBuddyStatusRoute(ctx: Context, deps: CodeBuddyStatus
   }, 'dsh-codebuddy-cli: Web status route')
 }
 
-/** Check loopback Host + Origin + JSON content type for a mutating POST. */
+/** Check loopback trust + JSON content type for a mutating POST. */
 function checkLoopbackPost(req: IncomingMessage, res: ServerResponse): boolean {
-  if (!hostIsLoopback(req.headers.host) || !originIsLoopback(req.headers.origin)) {
+  if (!isTrustedLocalRequest(req.headers)) {
     json(res, 403, { error: 'request-not-trusted' })
-    return false
-  }
-  if (typeof req.headers.origin !== 'string') {
-    json(res, 403, { error: 'origin-required' })
     return false
   }
   const type = req.headers['content-type']

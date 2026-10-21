@@ -77,7 +77,13 @@ describe('host heartbeat', () => {
     // this very PID) is alive.
     const genuine = { ...recycled, registeredAt: Date.now() }
     expect(isHeartbeatProcessAlive(genuine)).toBe(true)
-  })
+    // This case probes the live process start time three times (once directly,
+    // twice through `isHeartbeatProcessAlive`). On Windows 11 24H2+ `wmic` is
+    // gone, so each probe shells out to `powershell.exe` (~0.8-1 s here). The
+    // 5 s default is enough in isolation but not when the whole suite runs in
+    // parallel, so the budget is raised explicitly instead of leaving a
+    // machine-dependent flake.
+  }, 30_000)
 
   it('treats a malformed heartbeat file as absent', async () => {
     root = await mkdtemp(join(tmpdir(), 'wb-heartbeat-malformed-'))

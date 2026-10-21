@@ -171,6 +171,12 @@ const STANDARD_EFFORTS: readonly CodeBuddyEffort[] = ['low', 'medium', 'high', '
  * `off` is offered only when the model explicitly reports that thinking can be
  * disabled (`canDisableThinking === true`); every other level maps to its wire
  * spelling, and an unsupported one maps to `null`.
+ *
+ * The wire spelling for "no thinking" is `none`, not `off`: the upstream
+ * rejects the literal `off` with HTTP 400 `code 11150` ("the reasoning effort
+ * value is not supported by the current model") while accepting `none` for
+ * every model that can disable thinking. pi-ai keeps the *level* named `off`;
+ * only the value sent upstream differs.
  */
 export function reasoningFields(info: CodeBuddyModelInfo): { reasoning: boolean; thinkingLevelMap?: ThinkingLevelMap } {
   const reasoning = info.reasoning
@@ -185,7 +191,7 @@ export function reasoningFields(info: CodeBuddyModelInfo): { reasoning: boolean;
     ? STANDARD_EFFORTS
     : declared
   const map: Record<ModelThinkingLevel, string | null> = {
-    off: reasoning.canDisableThinking === true ? 'off' : null,
+    off: reasoning.canDisableThinking === true ? 'none' : null,
     // `minimal` is not in the upstream effort vocabulary (EFFORT_VALUES), so
     // no declared set can ever contain it.
     minimal: null,
@@ -198,8 +204,33 @@ export function reasoningFields(info: CodeBuddyModelInfo): { reasoning: boolean;
   return { reasoning: true, thinkingLevelMap: map as ThinkingLevelMap }
 }
 
-/** Build one pi-ai model descriptor pointing at the loopback shim. */
-function toPiModel(info: CodeBuddyModelInfo, baseUrl: string): Model<Api> {
+/**
+ * pi-ai only emits the OpenAI session-affinity headers (`session_id`,
+ * `x-client-request-id`) when `compat.sendSessionAffinityHeaders` is on, and
+ * its default is `isOpenRouter` — false for this provider. The shim needs the
+ * session id to tell one turn from the next (see `./turns.ts`), so the compat
+ * block is what makes turn correlation work at all: without it every request
+ * arrives with no session, the tracker never fills, and headers fall back to
+ * the body fingerprint that drifts mid-turn whenever an injector appends a
+ * `user` message.
+ *
+ * `sessionAffinityFormat: 'openai'` is the spelling pi-ai maps to those two
+ * header names; the `openrouter` variant would add `x-title` and a
+ * `HTTP-Referer` pair this upstream never expects.
+ */
+const CODEBUDDY_COMPAT = {
+  sendSessionAffinityHeaders: true,
+  sessionAffinityFormat: 'openai',
+} as const
+
+/**
+ * Build one pi-ai model descriptor pointing at the loopback shim.
+ *
+ * Exported for tests: the compat block it attaches is the only thing that makes
+ * pi-ai emit the session-affinity headers, and that contract is otherwise only
+ * observable by intercepting a live stream.
+ */
+export function toPiModel(info: CodeBuddyModelInfo, baseUrl: string): Model<Api> {
   return {
     id: info.id,
     name: info.name,
@@ -211,6 +242,7 @@ function toPiModel(info: CodeBuddyModelInfo, baseUrl: string): Model<Api> {
     cost: NO_COST,
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,
+    compat: CODEBUDDY_COMPAT,
   } as unknown as Model<Api>
 }
 

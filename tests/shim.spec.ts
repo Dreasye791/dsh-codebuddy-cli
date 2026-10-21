@@ -7,6 +7,7 @@ import { CodeBuddyCredentialStore } from '../src/auth.ts'
 import { CodeBuddyCatalog } from '../src/catalog.ts'
 import { createCodeBuddyShim, type CodeBuddyShim } from '../src/shim.ts'
 import type { CodeBuddyChatResult } from '../src/upstream.ts'
+import { turnFingerprint } from '../src/upstream.ts'
 
 const CLEANUP: (() => Promise<void>)[] = []
 
@@ -18,6 +19,7 @@ interface Harness {
   shim: CodeBuddyShim
   store: CodeBuddyCredentialStore
   upstreamBodies: string[]
+  upstreamHeaders: (Record<string, string> | undefined)[]
   upstreamResponse: () => CodeBuddyChatResult
 }
 
@@ -50,7 +52,10 @@ function rawRequest(options: {
   })
 }
 
-async function startShim(upstreamResponse: () => CodeBuddyChatResult): Promise<Harness> {
+async function startShim(
+  upstreamResponse: () => CodeBuddyChatResult,
+  turnIdFor?: (sessionId: string | undefined) => string | undefined,
+): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-shim-'))
   CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
   const cli = join(dir, 'Tencent-Cloud.coding-copilot.info')
@@ -67,14 +72,17 @@ async function startShim(upstreamResponse: () => CodeBuddyChatResult): Promise<H
     shim: undefined as unknown as CodeBuddyShim,
     store,
     upstreamBodies: [],
+    upstreamHeaders: [],
     upstreamResponse,
   }
   harness.shim = createCodeBuddyShim({
     store,
     catalog: new CodeBuddyCatalog(),
+    ...turnIdFor === undefined ? {} : { turnIdFor },
     client: {
-      async chatStream(_credential, bodyJson): Promise<CodeBuddyChatResult> {
+      async chatStream(_credential, bodyJson, _signal, extraHeaders): Promise<CodeBuddyChatResult> {
         harness.upstreamBodies.push(bodyJson)
+        harness.upstreamHeaders.push(extraHeaders)
         return harness.upstreamResponse()
       },
     },
@@ -309,5 +317,100 @@ describe('CodeBuddy shim', () => {
     })
     expect(res.status).toBe(401)
     expect(harness.upstreamBodies).toHaveLength(0)
+  })
+
+  it('sends the conversation headers with a body-derived turn id when no tracker is wired', async () => {
+    const harness = await startShim(() => ({
+      ok: true,
+      response: new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        authorization: `Bearer ${harness.shim.token()}`,
+        session_id: 'sess-fallback',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(response.status).toBe(200)
+    await response.text()
+    const headers = harness.upstreamHeaders[0]
+    expect(headers?.['X-Conversation-ID']).toBe('sess-fallback')
+    // The fingerprint is a 32-char digest, not the session id.
+    expect(headers?.['X-Conversation-Request-ID']).toMatch(/^[0-9a-f]{32}$/)
+    expect(headers?.['X-Request-ID']).toBe(headers?.['X-Conversation-Request-ID'])
+    expect(headers?.['X-Agent-Intent']).toBe('craft')
+  })
+
+  it('prefers the tracker turn id over the body fingerprint', async () => {
+    const harness = await startShim(
+      () => ({
+        ok: true,
+        response: new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      }),
+      sessionId => sessionId === 'sess-tracked' ? 'turn-from-tracker' : undefined,
+    )
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        authorization: `Bearer ${harness.shim.token()}`,
+        session_id: 'sess-tracked',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(response.status).toBe(200)
+    await response.text()
+    const headers = harness.upstreamHeaders[0]
+    expect(headers?.['X-Conversation-ID']).toBe('sess-tracked')
+    expect(headers?.['X-Conversation-Request-ID']).toBe('turn-from-tracker')
+    expect(headers?.['X-Request-ID']).toBe('turn-from-tracker')
+  })
+
+  it('keeps one backend record when DSH injects a user message mid-turn', async () => {
+    // The regression this pins: the fingerprint moves when a mid-turn `user`
+    // message arrives, so two calls of ONE turn would carry two turn ids and
+    // land in the backend as two records. With the tracker the id is stable.
+    const harness = await startShim(
+      () => ({
+        ok: true,
+        response: new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      }),
+      () => 'stable-turn-id',
+    )
+    const url = `${harness.shim.baseUrl()}/v1/chat/completions`
+    const base = {
+      'Content-Type': 'application/json',
+      authorization: `Bearer ${harness.shim.token()}`,
+      session_id: 'sess-inject',
+    }
+    await (await fetch(url, {
+      method: 'POST',
+      headers: base,
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'do the task' }] }),
+    })).text()
+    await (await fetch(url, {
+      method: 'POST',
+      headers: base,
+      body: JSON.stringify({
+        model: 'auto',
+        messages: [
+          { role: 'user', content: 'do the task' },
+          { role: 'assistant', content: 'working' },
+          // Injected by the host mid-turn: the fingerprint changes here.
+          { role: 'user', content: 'Time sampled while preparing turn 1, step 3' },
+        ],
+      }),
+    })).text()
+
+    expect(harness.upstreamHeaders).toHaveLength(2)
+    const [first, second] = harness.upstreamHeaders
+    expect(first?.['X-Conversation-Request-ID']).toBe('stable-turn-id')
+    expect(second?.['X-Conversation-Request-ID']).toBe('stable-turn-id')
+    // Prove the bodies really would have produced different fingerprints, so
+    // the assertion above is not vacuous.
+    expect(turnFingerprint(harness.upstreamBodies[0] ?? ''))
+      .not.toBe(turnFingerprint(harness.upstreamBodies[1] ?? ''))
   })
 })

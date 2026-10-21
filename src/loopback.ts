@@ -48,3 +48,42 @@ export function originIsLoopback(origin: string | undefined): boolean {
     return false
   }
 }
+
+/**
+ * Signals a mutating request may carry when it arrives without an Origin.
+ *
+ * `Sec-Fetch-Site` is a forbidden request header: page script cannot set it,
+ * so its absence cannot be forged by a cross-site page. Values that mean
+ * "another site initiated this" are refused outright; `none` and `same-origin`
+ * are the browser's own top-level and same-origin navigations.
+ */
+const CROSS_SITE_FETCH_SITES = new Set(['cross-site', 'same-site'])
+
+/**
+ * Decide whether a mutating local request may proceed.
+ *
+ * An Origin that is present must be loopback, exactly as before. The extra
+ * requirement that an Origin be *present* only exists to stop cross-site
+ * pages, which is why it is now conditional: a request with no Origin passes
+ * when nothing marks it as cross-site, and the Host check above still rejects
+ * DNS-rebinding pages. Desktop shells that proxy loopback traffic under a
+ * custom scheme strip Origin before forwarding, and those were getting a 403.
+ *
+ * @param headers request headers, read case-insensitively by node.
+ * @returns `true` when the request may proceed.
+ */
+export function isTrustedLocalRequest(headers: {
+  host?: string | undefined
+  origin?: string | undefined
+  'sec-fetch-site'?: string | string[] | undefined
+}): boolean {
+  if (!hostIsLoopback(headers.host)) return false
+  const origin = headers.origin
+  if (typeof origin === 'string' && origin.trim() !== '') return originIsLoopback(origin)
+  const site = headers['sec-fetch-site']
+  const value = Array.isArray(site) ? site[0] : site
+  if (typeof value !== 'string') return true
+  const normalized = value.trim().toLowerCase()
+  if (normalized === '') return true
+  return !CROSS_SITE_FETCH_SITES.has(normalized)
+}

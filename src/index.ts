@@ -20,6 +20,9 @@ import { AccountStore } from './account-store.ts'
 import { startOAuthLogin, pollOAuthLogin } from './oauth.ts'
 import { ensureClientIdentity } from './upstream.ts'
 import { installSettingsSectionCompat, resolveSettingsNamespaceCompat } from './settings-compat.ts'
+import { createTurnTracker } from './turns.ts'
+// Type-only: augments `Events` with `agent/pre-step`; erased at build time.
+import type {} from './pre-step-events.ts'
 
 export { CODEBUDDY_PROVIDER, CODEBUDDY_STREAM_IDLE_TIMEOUT_MS, createCodeBuddyAdapter, type CodeBuddyAdapter } from './adapter.ts'
 export { createCodeBuddyShim, type CodeBuddyShim } from './shim.ts'
@@ -213,7 +216,31 @@ export function apply(ctx: Context, rawConfig: Config): void {
     accountStore,
   })
   const catalog = new CodeBuddyCatalog()
-  const shim = createCodeBuddyShim({ store, client, catalog, logger: ctx.logger })
+  // Turn boundaries for the upstream conversation headers. The tracker is
+  // updated from the agent loop below; the shim reads it per request.
+  const turns = createTurnTracker()
+  const shim = createCodeBuddyShim({
+    store,
+    client,
+    catalog,
+    logger: ctx.logger,
+    turnIdFor: sessionId => turns.current(sessionId),
+  })
+
+  // A turn starts at the loop's first step. Reading the boundary here rather
+  // than from the request body is what keeps one user turn in one backend
+  // record: DSH injects extra `user` messages mid-turn (time context, progress
+  // notices, runtime memory), so a body-derived id changes several times
+  // inside a single turn. See `src/turns.ts`.
+  ctx.on('agent/pre-step', (payload, next) => {
+    const sessionId = payload.agent.session.id
+    if (typeof sessionId === 'string' && sessionId !== '') {
+      // `step` restarts at 1 for every turn; a session seen for the first time
+      // mid-loop (a resumed turn) still needs an id, hence the second branch.
+      if (payload.step === 1 || turns.current(sessionId) === undefined) turns.begin(sessionId)
+    }
+    return next()
+  })
 
   // The authoritative configuration read. The settings document is the source
   // of truth once it exists, so read the live section on every call rather than

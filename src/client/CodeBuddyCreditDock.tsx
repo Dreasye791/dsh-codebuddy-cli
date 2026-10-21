@@ -231,8 +231,17 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
   const running = useSession(snapshot => snapshot.running)
   const [load, setLoad] = useState<Load>({ phase: 'idle' })
   const [open, setOpen] = useState(false)
+  const [turnSpent, setTurnSpent] = useState<number | null>(null)
   const mounted = useRef(true)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * Remaining credit as of the last settled reading. The per-turn figure is the
+   * drop between the reading captured when a turn began and the reading taken
+   * once it settled.
+   */
+  const lastRemaining = useRef<number | null>(null)
+  /** Remaining credit captured when the current turn began, or null. */
+  const turnBaseline = useRef<number | null>(null)
 
   useEffect(() => {
     mounted.current = true
@@ -266,7 +275,21 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
     return () => { live = false }
   }, [])
 
-  const refresh = async (): Promise<void> => {
+  /** The remaining-credit figure a status document carries, or null. */
+  const remainingOf = (value: CodeBuddyWebStatus | null): number | null => {
+    // Only a signed-in document carries billing figures; the signed-out arm has
+    // no `credits` field at all, so narrow before reading it.
+    const total = value?.status === 'signed-in' ? value.credits?.total : undefined
+    return typeof total === 'number' && Number.isFinite(total) ? total : null
+  }
+
+  /**
+   * Refresh the status document.
+   *
+   * @param settleTurn - when true, treat this reading as the end of a turn:
+   * subtract the turn's baseline from it to publish the per-turn figure.
+   */
+  const refresh = async (settleTurn = false): Promise<void> => {
     try {
       const response = await fetch(CODEBUDDY_STATUS_PATH, {
         headers: { accept: 'application/json' },
@@ -274,7 +297,23 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
       })
       const value: unknown = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      if (mounted.current) setLoad({ phase: 'ok', value: value as CodeBuddyWebStatus })
+      if (!mounted.current) return
+      const remaining = remainingOf(value as CodeBuddyWebStatus | null)
+      if (remaining !== null) {
+        if (settleTurn) {
+          const baseline = turnBaseline.current
+          turnBaseline.current = null
+          // A rise means the cycle reset or an account was switched mid-turn;
+          // that is not consumption, so publish nothing rather than a negative.
+          setTurnSpent(
+            baseline !== null && baseline > remaining
+              ? Math.round((baseline - remaining) * 100) / 100
+              : null,
+          )
+        }
+        lastRemaining.current = remaining
+      }
+      setLoad({ phase: 'ok', value: value as CodeBuddyWebStatus })
     } catch (error: unknown) {
       if (mounted.current) {
         setLoad({ phase: 'error', message: error instanceof Error ? error.message : t('requestFailed') })
@@ -300,12 +339,22 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
 
   // Credit is billed server-side when a model request completes, so the
   // moment a turn settles (running → idle) is exactly when the upstream
-  // figure moves. Refresh immediately instead of waiting out the polling
-  // interval; a short delay lets the provider finish its own accounting.
+  // figure moves. The reading taken when the turn began is the baseline; the
+  // one taken after it settles closes the interval and publishes the drop.
+  // A short delay on the settle read lets the provider finish its accounting.
   const wasRunning = useRef(false)
   useEffect(() => {
-    if (codeBuddy && wasRunning.current && !running) {
-      const timer = window.setTimeout(() => { void refresh() }, 2_000)
+    if (!codeBuddy) {
+      wasRunning.current = running
+      return
+    }
+    if (running && !wasRunning.current) {
+      // A turn just started: remember what was left before it spent anything.
+      turnBaseline.current = lastRemaining.current
+      setTurnSpent(null)
+    } else if (!running && wasRunning.current) {
+      // A turn just settled: read the new total and publish the drop.
+      const timer = window.setTimeout(() => { void refresh(true) }, 2_000)
       wasRunning.current = running
       return () => { window.clearTimeout(timer) }
     }
@@ -341,7 +390,7 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
   // hook above has already run, so returning here keeps the hook order stable.
   if (!codeBuddy && !showOnOtherProviders) return null
 
-  const line = buildDockLine(selection, load)
+  const line = buildDockLine(selection, load, turnSpent)
   const lineText = renderDockSegments(line.segments, t)
   const status = load.phase === 'ok' && load.value.status === 'signed-in' ? load.value : undefined
   const credits = line.credits

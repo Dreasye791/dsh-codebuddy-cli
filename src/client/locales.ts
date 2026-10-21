@@ -26,12 +26,16 @@ export const en = {
   badgeNightDiscount: 'Night discount',
   rate: '{rate} credits per message',
   creditTotalCompact: 'Credits {total}',
+  creditTurnSpent: 'this turn {credits}',
   creditRate: '· {rate}',
   creditLoading: 'Credits …',
   creditSignedOut: 'Credits — not signed in',
   creditUnavailable: 'Credits unavailable',
-  dockProvider: 'Provider {provider}',
-  dockModel: 'Model {model}',
+  // Bare `{provider}` / `{model}`: the row shares the dock with the host's
+  // token and round figures, and the "Provider"/"Model" labels spent width
+  // without adding information on a line that is already one row tall.
+  dockProvider: '{provider}',
+  dockModel: '{model}',
   dockNoModel: 'No model selected',
   creditPanelAria: 'CodeBuddy credit details',
   creditPackageRemain: '{remain} / {size}',
@@ -184,6 +188,7 @@ export type CodeBuddyCreditKey = Extract<
   | 'refresh'
   | 'requestFailed'
   | 'creditTotalCompact'
+  | 'creditTurnSpent'
   | 'creditRate'
   | 'creditLoading'
   | 'creditSignedOut'
@@ -224,12 +229,13 @@ export const zh: Record<CodeBuddySettingsKey, string> = {
   badgeNightDiscount: '夜间折扣',
   rate: '{rate} 积分/次',
   creditTotalCompact: '积分 {total}',
+  creditTurnSpent: '本轮 {credits}',
   creditRate: '· {rate}',
   creditLoading: '积分 …',
   creditSignedOut: '积分 — 未登录',
   creditUnavailable: '积分不可用',
-  dockProvider: 'Provider {provider}',
-  dockModel: 'Model {model}',
+  dockProvider: '{provider}',
+  dockModel: '{model}',
   dockNoModel: '未选择模型',
   creditPanelAria: 'CodeBuddy 积分明细',
   creditPackageRemain: '{remain} / {size}',

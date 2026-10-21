@@ -104,12 +104,13 @@ async function startImportServer(options: HarnessOptions = {}): Promise<Harness>
 function postImport(
   port: number,
   body: unknown,
-  overrides: { origin?: string | null, contentType?: string | null, host?: string } = {},
+  overrides: { origin?: string | null, contentType?: string | null, host?: string, secFetchSite?: string } = {},
 ): Promise<{ status: number, body: string }> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { host: overrides.host ?? `127.0.0.1:${port}` }
     const origin = overrides.origin === undefined ? 'http://127.0.0.1:3080' : overrides.origin
     if (origin !== null) headers.origin = origin
+    if (overrides.secFetchSite !== undefined) headers['sec-fetch-site'] = overrides.secFetchSite
     const type = overrides.contentType === undefined ? 'application/json' : overrides.contentType
     if (type !== null) headers['content-type'] = type
     const payload = typeof body === 'string' ? body : JSON.stringify(body)
@@ -314,12 +315,23 @@ describe('import account route', () => {
     expect(await readAccountsFile(harness.dir)).toBe('<<absent>>')
   })
 
-  it('rejects an absent Origin', async () => {
+  it('accepts an absent Origin when nothing marks it cross-site', async () => {
     const harness = await startImportServer({
       refresh: async () => ({ accessToken: 'AT-NEW' }),
       fetchModels: async () => [{ id: 'model-a' }],
     })
     const answer = await postImport(harness.port, { refreshToken: 'RT' }, { origin: null })
+    expect(answer.status).toBe(200)
+    // Reaching upstream is the point: the request must not be stopped at the gate.
+    expect(harness.probes.length).toBeGreaterThan(0)
+  })
+
+  it('rejects an absent Origin that a browser marked cross-site', async () => {
+    const harness = await startImportServer({
+      refresh: async () => ({ accessToken: 'AT-NEW' }),
+      fetchModels: async () => [{ id: 'model-a' }],
+    })
+    const answer = await postImport(harness.port, { refreshToken: 'RT' }, { origin: null, secFetchSite: 'cross-site' })
     expect(answer.status).toBe(403)
     expect(harness.probes).toHaveLength(0)
   })

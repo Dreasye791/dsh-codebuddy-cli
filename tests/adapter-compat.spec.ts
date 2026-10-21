@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { stream } from '@earendil-works/pi-ai/api/openai-completions'
+import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
+import type { Api, Model } from '@earendil-works/pi-ai'
+import { toPiModel } from '../src/adapter.ts'
+import { FALLBACK_CODEBUDDY_MODELS } from '../src/catalog.ts'
+import { sessionIdOf } from '../src/turns.ts'
 
 /**
  * Dual-host compatibility guard for the `llm-pi-ai` resolved profile.
@@ -96,3 +102,85 @@ describe('pi-ai host contract', () => {
     expect(adapterSource).toContain("reading 'get'")
   })
 })
+
+/**
+ * Turn correlation depends on pi-ai actually emitting a session header.
+ *
+ * `turns.ts` keys its per-session turn tracker on `session_id` /
+ * `x-client-request-id` / `x-session-affinity`, so if pi-ai stops sending them
+ * the tracker silently never fills: every request then falls back to the body
+ * fingerprint, which drifts mid-turn as soon as an injector appends another
+ * `user` message. That degradation is invisible in the shim's own tests, which
+ * call the request handler directly — only a real stream shows the headers.
+ *
+ * The assertions below drive the production descriptor through pi-ai's own
+ * `stream()` with a fake fetch, so they pin the pi-ai contract rather than our
+ * copy of it.
+ */
+describe('compat block makes pi-ai emit the session-affinity headers', () => {
+  // `noUncheckedIndexedAccess` makes a literal index possibly-undefined; the
+  // roster is a non-empty constant, so naming the row once is honest.
+  const row = FALLBACK_CODEBUDDY_MODELS[0]
+  if (row === undefined) throw new Error('catalog roster is empty')
+  const descriptor = toPiModel(row, 'http://127.0.0.1:1/v1')
+
+  it('attaches a compat block that turns session headers on', () => {
+    const compat = (descriptor as unknown as { compat?: Record<string, unknown> }).compat
+    expect(compat).toBeDefined()
+    expect(compat?.sendSessionAffinityHeaders).toBe(true)
+    // `openrouter` would send `x-session-id` only, which no `sessionIdOf`
+    // branch reads, and would also add headers this upstream never expects.
+    expect(compat?.sessionAffinityFormat).toBe('openai')
+  })
+
+  it('sends the headers a live stream, under the names turns.ts reads', async () => {
+    const captured = await captureHeaders(descriptor, 'sess-turn-correlation')
+    // Exactly the three names sessionIdOf() consults; any one is sufficient,
+    // and all three arriving is what makes the tracker's lookup order moot.
+    expect(captured.session_id).toBe('sess-turn-correlation')
+    expect(captured['x-client-request-id']).toBe('sess-turn-correlation')
+    expect(captured['x-session-affinity']).toBe('sess-turn-correlation')
+    expect(sessionIdOf(captured)).toBe('sess-turn-correlation')
+  })
+
+  it('sends nothing when the host withholds a session id', async () => {
+    // A host that cannot name the session must not have one invented for it:
+    // a constant fallback would merge unrelated conversations into one turn.
+    const captured = await captureHeaders(descriptor, undefined)
+    expect(captured.session_id).toBeUndefined()
+    expect(captured['x-client-request-id']).toBeUndefined()
+    expect(sessionIdOf(captured)).toBeUndefined()
+  })
+})
+
+/** Drive one real pi-ai stream and return the headers it put on the wire. */
+async function captureHeaders(model: Model<Api>, sessionId: string | undefined): Promise<Record<string, string>> {
+  const captured: Record<string, string> = {}
+  // `FetchFunction` is `typeof globalThis.fetch`, so typing it that way keeps
+  // `init.headers` as the SDK's `HeadersInit` instead of an opaque `unknown`.
+  const fakeFetch: typeof globalThis.fetch = async (_input, init) => {
+    // The OpenAI SDK passes a `Headers` instance; spreading it yields nothing.
+    for (const [key, value] of new Headers(init?.headers).entries()) captured[key] = value
+    return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  }
+  const events = stream(
+    // toPiModel declares the wide `Model<Api>`; this stream function is the
+    // openai-completions one, so narrow it at the call boundary.
+    model as Model<'openai-completions'>,
+    // Only `normalizeContext` may build a TranscriptContext, and `stream`
+    // takes that branded type — so the probe context goes through it.
+    normalizeContext({ messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }] }),
+    {
+      apiKey: 'probe-key',
+      ...sessionId === undefined ? {} : { sessionId },
+      fetch: fakeFetch,
+    },
+  )
+  for await (const _event of events) {
+    // drain: the request is issued before the first event is pushed
+  }
+  return captured
+}

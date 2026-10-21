@@ -286,11 +286,21 @@ describe('dock preference route', () => {
     expect(response.status).toBe(501)
   })
 
-  it('refuses a POST without an Origin header', async () => {
+  it('accepts a POST without an Origin header when nothing marks it cross-site', async () => {
     const port = await startPreferenceServer(async () => true)
     const response = await requestPreference({
       port, method: 'POST',
       headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ showDockOnOtherProviders: true }),
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it('refuses a POST without an Origin header that a browser marked cross-site', async () => {
+    const port = await startPreferenceServer(async () => true)
+    const response = await requestPreference({
+      port, method: 'POST',
+      headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
       body: JSON.stringify({ showDockOnOtherProviders: true }),
     })
     expect(response.status).toBe(403)
@@ -370,10 +380,21 @@ describe('check-in route gate', () => {
     expect(seen).toEqual(['at'])
   })
 
-  it('refuses a POST without an Origin header', async () => {
+  it('accepts a POST without an Origin header when nothing marks it cross-site', async () => {
     const port = await startCheckInServer(async () => ({ status: 'ok', message: '' }))
     const response = await requestCheckIn({
-      port, method: 'POST', headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
+      port, method: 'POST', headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' }, body: '{}',
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it('refuses a POST without an Origin header that a browser marked cross-site', async () => {
+    const port = await startCheckInServer(async () => ({ status: 'ok', message: '' }))
+    const response = await requestCheckIn({
+      port,
+      method: 'POST',
+      headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
+      body: '{}',
     })
     expect(response.status).toBe(403)
   })
@@ -617,12 +638,23 @@ describe('account management routes', () => {
     expect(response.status).toBe(404)
   })
 
-  it('account routes refuse requests without an Origin header', async () => {
+  it('account routes accept requests without an Origin header when nothing marks them cross-site', async () => {
     const { deps } = await makeDeps()
     const port = await startAccountServer(deps)
     const response = await requestOnce({
       port, method: 'POST', path: CODEBUDDY_SWITCH_ACCOUNT_PATH,
       headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'x' }),
+    })
+    expect(response.status).toBe(404)
+  })
+
+  it('account routes refuse requests without an Origin header that a browser marked cross-site', async () => {
+    const { deps } = await makeDeps()
+    const port = await startAccountServer(deps)
+    const response = await requestOnce({
+      port, method: 'POST', path: CODEBUDDY_SWITCH_ACCOUNT_PATH,
+      headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
       body: JSON.stringify({ id: 'x' }),
     })
     expect(response.status).toBe(403)

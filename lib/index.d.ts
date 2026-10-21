@@ -320,13 +320,32 @@ declare class CodeBuddyUpstreamClient {
    */
   constructor();
   /** POST the chat endpoint; a successful answer is the raw SSE response. */
-  chatStream(credential: CodeBuddyCredential, bodyJson: string, signal?: AbortSignal): Promise<CodeBuddyChatResult>;
+  chatStream(credential: CodeBuddyCredential, bodyJson: string, signal?: AbortSignal, extraHeaders?: Readonly<Record<string, string>>): Promise<CodeBuddyChatResult>;
   /** POST the token-refresh endpoint; the caller merges the outcome. */
   refreshToken(credential: CodeBuddyCredential): Promise<CodeBuddyRefreshOutcome>;
   /** GET the personal model catalog and keep the `cli` agent's models only. */
   fetchModels(credential: CodeBuddyCredential): Promise<readonly CodeBuddyUpstreamModel[]>;
   /** POST the billing endpoint for the aggregated remaining credit. */
   fetchCredits(credential: CodeBuddyCredential): Promise<CodeBuddyCredits>;
+  /**
+   * Read the shared enterprise cycle quota for a member with no personal packages.
+   *
+   * `get-user-resource` lists *personal* credit packages only, so an enterprise
+   * member without a personal plan always reads as zero — which is exactly the
+   * "no credit package" the card used to show. The web console's plan-and-usage
+   * page instead asks `get-enterprise-user-usage`, which reports the enterprise
+   * cycle: `limitNum` is the allowance for the cycle and `credit` is what the
+   * cycle has already consumed, so what remains is their difference.
+   *
+   * Failure resolves to undefined instead of throwing, so the caller keeps the
+   * empty personal answer rather than turning the whole status document into an
+   * error.
+   *
+   * @param credential - resolved credential carrying the enterprise id.
+   * @returns the same `{ total, accounts }` shape as {@link fetchCredits}, or
+   * undefined when the upstream has nothing usable to report.
+   */
+  fetchEnterpriseCredits(credential: CodeBuddyCredential): Promise<CodeBuddyCredits | undefined>;
   /**
    * Fetch official per-request usage over a window and aggregate it.
    *
@@ -634,6 +653,15 @@ interface CodeBuddyShimOptions {
   client: Pick<CodeBuddyUpstreamClient, 'chatStream'>;
   catalog: CodeBuddyCatalog;
   logger?: ShimLogger;
+  /**
+   * Resolve the current turn id for a session.
+   *
+   * Supplied by the plugin so the turn boundary comes from the agent loop
+   * rather than from the request body; see `src/turns.ts` for why the body is
+   * not a reliable source. Omitted in tests and in headless use, where the
+   * shim then falls back to the body fingerprint.
+   */
+  turnIdFor?: (sessionId: string | undefined) => string | undefined;
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
