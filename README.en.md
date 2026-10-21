@@ -2,6 +2,8 @@
 
 [中文](./README.md) | English
 
+> This project is based on [fu827707013/dsh-codebuddy-cli](https://github.com/fu827707013/dsh-codebuddy-cli) and modified from it. The original project is MIT licensed.
+
 Reuse the CodeBuddy CLI (CodeBuddy Code) sign-in to bring its models (GLM-5.3, GLM-5.2, DeepSeek-V4-Pro, DeepSeek-V4-Flash, Kimi-K3, MiniMax-M3, Hy3, and more) into DeepSeek Harness — zero configuration, ready out of the box.
 
 ## Features

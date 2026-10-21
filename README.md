@@ -2,6 +2,8 @@
 
 [English](./README.en.md) | 中文
 
+> 本项目基于 [fu827707013/dsh-codebuddy-cli](https://github.com/fu827707013/dsh-codebuddy-cli) 修改，原项目遵循 MIT 许可证。
+
 复用 CodeBuddy CLI（CodeBuddy Code）的登录态，把 CodeBuddy 包含的各种模型（GLM-5.3、GLM-5.2、DeepSeek-V4-Pro、DeepSeek-V4-Flash、Kimi-K3、MiniMax-M3、Hy3 等）自动接入 DeepSeek Harness，实现在 DSH 对话窗口里零配置使用。
 
 ## 功能
