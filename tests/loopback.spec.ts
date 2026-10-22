@@ -80,4 +80,14 @@ describe('isTrustedLocalRequest', () => {
     expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'same-site' })).toBe(false)
     expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': ['cross-site', 'x'] })).toBe(false)
   })
+
+  it('refuses a cross-site value that arrives comma-joined', () => {
+    // Node folds repeated headers into "a, b"; a single set lookup would miss
+    // every token, which is exactly the bypass this guards against.
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'cross-site, cross-site' })).toBe(false)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'same-origin, cross-site' })).toBe(false)
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': 'same-origin, none' })).toBe(true)
+    // Array form goes through the same split, not just its first element.
+    expect(isTrustedLocalRequest({ host: '127.0.0.1:3080', 'sec-fetch-site': ['same-origin', 'same-site'] })).toBe(false)
+  })
 })

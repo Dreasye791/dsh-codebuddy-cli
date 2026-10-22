@@ -1110,7 +1110,13 @@ export class CodeBuddyUpstreamClient {
     const endMs = (() => {
       const raw = data['cycleEndTime']
       if (typeof raw !== 'string' || raw.trim() === '') return undefined
-      const parsed = Date.parse(raw.trim().replace(' ', 'T'))
+      // The upstream stamps the cycle boundary in Beijing time without an
+      // offset. `Date.parse` would read such a string as the *host's* local
+      // time, so a machine outside UTC+8 would mark the cycle expired hours
+      // early or late — pin +08:00 unless the stamp already carries a zone.
+      const normalized = raw.trim().replace(' ', 'T')
+      const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/.test(normalized) ? normalized : `${normalized}+08:00`
+      const parsed = Date.parse(zoned)
       return Number.isFinite(parsed) ? parsed : undefined
     })()
     const nowMs = Date.now()

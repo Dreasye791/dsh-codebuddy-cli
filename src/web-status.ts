@@ -228,10 +228,16 @@ function selectionOf(
  * a live billing answer whose failure degrades to `creditsError` rather than
  * failing the whole document, memoized briefly so the card and the composer
  * dock's polling share one upstream call per TTL window.
+ *
+ * `options.freshCredits` skips that memo for one read. The dock diffs two
+ * readings to publish the per-turn figure and asks for a fresh one right after
+ * a turn settles; serving it the memoized pre-turn value would make a short
+ * turn look like it spent nothing.
  */
 export async function codeBuddyWebStatus(
   deps: CodeBuddyStatusRouteOptions,
   creditsCache?: { entry?: CreditsCacheEntry },
+  options?: { readonly freshCredits?: boolean },
 ): Promise<CodeBuddyWebStatus> {
   const authStatus = await deps.store.status()
   if (authStatus.state !== 'signed-in') return { status: 'signed-out' }
@@ -278,7 +284,8 @@ export async function codeBuddyWebStatus(
     const credential = await deps.store.current()
     if (credential !== undefined) {
       const cached = creditsCache?.entry
-      if (cached !== undefined && Date.now() - cached.at < CREDITS_CACHE_TTL_MS) {
+      const bypass = options?.freshCredits === true
+      if (!bypass && cached !== undefined && Date.now() - cached.at < CREDITS_CACHE_TTL_MS) {
         return { ...statusWithCatalog, credits: cached.credits }
       }
       const credits = await deps.client.fetchCredits(credential)
@@ -376,6 +383,22 @@ const accountCreditsCache = new Map<string, { at: number; payload: Record<string
 /** TTL for per-account credit answers within one process. */
 const ACCOUNT_CREDIT_TTL_MS = 30_000
 
+/**
+ * Whether this status request asks for an uncached credit reading
+ * (`?credits=fresh`). The dock uses it right after a turn settles, where a
+ * memoized answer captured before the turn began would report no consumption.
+ */
+function freshCreditsRequested(rawUrl: string | undefined): boolean {
+  if (typeof rawUrl !== 'string') return false
+  const start = rawUrl.indexOf('?')
+  if (start === -1) return false
+  for (const pair of rawUrl.slice(start + 1).split('&')) {
+    const [key, value = ''] = pair.split('=')
+    if (key === 'credits' && value === 'fresh') return true
+  }
+  return false
+}
+
 /** The status route's request handler, extracted so tests can mount it on a bare server. */
 export function codeBuddyStatusHandler(
   deps: CodeBuddyStatusRouteOptions,
@@ -391,7 +414,9 @@ export function codeBuddyStatusHandler(
       return
     }
     try {
-      const status = await codeBuddyWebStatus(deps, creditsCache)
+      const status = await codeBuddyWebStatus(deps, creditsCache, {
+        freshCredits: freshCreditsRequested(req.url),
+      })
       json(res, 200, await withAccounts(deps, status))
     } catch (error: unknown) {
       json(res, 500, { error: safeMessage(error) })

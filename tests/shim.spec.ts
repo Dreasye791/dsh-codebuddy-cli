@@ -55,6 +55,7 @@ function rawRequest(options: {
 async function startShim(
   upstreamResponse: () => CodeBuddyChatResult,
   turnIdFor?: (sessionId: string | undefined) => string | undefined,
+  logger?: { warn: (...args: unknown[]) => void, error: (...args: unknown[]) => void },
 ): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-shim-'))
   CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
@@ -79,6 +80,7 @@ async function startShim(
     store,
     catalog: new CodeBuddyCatalog(),
     ...turnIdFor === undefined ? {} : { turnIdFor },
+    ...logger === undefined ? {} : { logger },
     client: {
       async chatStream(_credential, bodyJson, _signal, extraHeaders): Promise<CodeBuddyChatResult> {
         harness.upstreamBodies.push(bodyJson)
@@ -136,6 +138,65 @@ describe('CodeBuddy shim', () => {
     const forwarded = JSON.parse(harness.upstreamBodies[0] ?? '') as Record<string, unknown>
     expect(forwarded['stream']).toBe(true)
     expect(forwarded['tool_choice']).toBe('auto')
+  })
+
+  it('warns once per session when a session header yields no turn id', async () => {
+    const warnings: string[] = []
+    // The affinity headers arrive but the tracker never matched: exactly the
+    // silent degradation the warning exists to surface.
+    const harness = await startShim(
+      () => ({
+        ok: true,
+        response: new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      }),
+      () => undefined,
+      { warn: (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }, error: () => {} },
+    )
+    const send = async (): Promise<void> => {
+      const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          authorization: `Bearer ${harness.shim.token()}`,
+          'x-client-request-id': 'sess-1',
+        },
+        body: JSON.stringify({ model: 'auto', stream: false, messages: [{ role: 'user', content: 'hi' }] }),
+      })
+      expect(response.status).toBe(200)
+      await response.text()
+    }
+    await send()
+    await send()
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('no turn id')
+  })
+
+  it('stays quiet when no session header arrives', async () => {
+    const warnings: string[] = []
+    const harness = await startShim(
+      () => ({
+        ok: true,
+        response: new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      }),
+      () => undefined,
+      { warn: (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }, error: () => {} },
+    )
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'auto', stream: false, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(response.status).toBe(200)
+    await response.text()
+    // No session header at all is a different condition (host-side), and the
+    // dock/card would otherwise be noisy on every headless request.
+    expect(warnings).toHaveLength(0)
   })
 
   it('forwards the reasoning_effort a model picker selection sends', async () => {

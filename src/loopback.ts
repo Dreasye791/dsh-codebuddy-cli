@@ -81,9 +81,12 @@ export function isTrustedLocalRequest(headers: {
   const origin = headers.origin
   if (typeof origin === 'string' && origin.trim() !== '') return originIsLoopback(origin)
   const site = headers['sec-fetch-site']
-  const value = Array.isArray(site) ? site[0] : site
-  if (typeof value !== 'string') return true
-  const normalized = value.trim().toLowerCase()
-  if (normalized === '') return true
-  return !CROSS_SITE_FETCH_SITES.has(normalized)
+  // Node folds repeated headers into one comma-joined string ("a, b"). A single
+  // set lookup would then miss every token and let a cross-site request
+  // through, so split first: any cross-site token refuses the request.
+  const raw = Array.isArray(site) ? site.join(',') : site
+  if (typeof raw !== 'string') return true
+  const tokens = raw.split(',').map(token => token.trim().toLowerCase()).filter(token => token !== '')
+  if (tokens.length === 0) return true
+  return tokens.every(token => !CROSS_SITE_FETCH_SITES.has(token))
 }

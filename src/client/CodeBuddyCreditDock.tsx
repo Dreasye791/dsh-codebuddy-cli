@@ -240,8 +240,15 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
    * once it settled.
    */
   const lastRemaining = useRef<number | null>(null)
-  /** Remaining credit captured when the current turn began, or null. */
-  const turnBaseline = useRef<number | null>(null)
+  /**
+   * Monotonic turn counter. A settle read carries the number it was armed with
+   * so it can only close its own turn: a new turn starting inside the settle
+   * delay replaces the baseline, and settling against the replacement would
+   * bill the finished turn for the next one's spend.
+   */
+  const turnSeq = useRef(0)
+  /** Baseline of the turn currently open, tagged with that turn's number. */
+  const turnBaseline = useRef<{ seq: number; remaining: number } | null>(null)
 
   useEffect(() => {
     mounted.current = true
@@ -286,30 +293,40 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
   /**
    * Refresh the status document.
    *
-   * @param settleTurn - when true, treat this reading as the end of a turn:
-   * subtract the turn's baseline from it to publish the per-turn figure.
+   * A settle read (`settleSeq` given) closes that turn: it asks for an uncached
+   * credit answer — the route memoizes for 30 s, and a memoized pre-turn value
+   * would make a short turn look like it spent nothing — then subtracts the
+   * baseline recorded when the turn began.
+   *
+   * @param settleSeq - the turn number this read closes, or undefined for a poll.
    */
-  const refresh = async (settleTurn = false): Promise<void> => {
+  const refresh = async (settleSeq?: number): Promise<void> => {
+    const settling = typeof settleSeq === 'number'
     try {
-      const response = await fetch(CODEBUDDY_STATUS_PATH, {
-        headers: { accept: 'application/json' },
-        credentials: 'same-origin',
-      })
+      const response = await fetch(
+        settling ? `${CODEBUDDY_STATUS_PATH}?credits=fresh` : CODEBUDDY_STATUS_PATH,
+        { headers: { accept: 'application/json' }, credentials: 'same-origin' },
+      )
       const value: unknown = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       if (!mounted.current) return
       const remaining = remainingOf(value as CodeBuddyWebStatus | null)
       if (remaining !== null) {
-        if (settleTurn) {
+        if (settling) {
           const baseline = turnBaseline.current
-          turnBaseline.current = null
-          // A rise means the cycle reset or an account was switched mid-turn;
-          // that is not consumption, so publish nothing rather than a negative.
-          setTurnSpent(
-            baseline !== null && baseline > remaining
-              ? Math.round((baseline - remaining) * 100) / 100
-              : null,
-          )
+          // Only the turn that armed this read may close it. A newer turn has
+          // already replaced the baseline; publishing against it would bill the
+          // finished turn for the next one's spend.
+          if (baseline !== null && baseline.seq === settleSeq) {
+            turnBaseline.current = null
+            // A rise means the cycle reset or an account was switched mid-turn;
+            // that is not consumption, so publish nothing rather than a negative.
+            setTurnSpent(
+              baseline.remaining > remaining
+                ? Math.round((baseline.remaining - remaining) * 100) / 100
+                : null,
+            )
+          }
         }
         lastRemaining.current = remaining
       }
@@ -349,12 +366,17 @@ function CreditDockBody({ selection, codeBuddy, useSession, t }: {
       return
     }
     if (running && !wasRunning.current) {
-      // A turn just started: remember what was left before it spent anything.
-      turnBaseline.current = lastRemaining.current
+      // A turn just started: remember what was left before it spent anything,
+      // tagged with this turn's number so a later turn cannot overwrite it.
+      turnSeq.current += 1
+      const previous = lastRemaining.current
+      turnBaseline.current = previous === null ? null : { seq: turnSeq.current, remaining: previous }
       setTurnSpent(null)
     } else if (!running && wasRunning.current) {
-      // A turn just settled: read the new total and publish the drop.
-      const timer = window.setTimeout(() => { void refresh(true) }, 2_000)
+      // A turn just settled: read the new total and publish the drop. The
+      // reading is armed with this turn's number, so it can only close it.
+      const settledSeq = turnSeq.current
+      const timer = window.setTimeout(() => { void refresh(settledSeq) }, 2_000)
       wasRunning.current = running
       return () => { window.clearTimeout(timer) }
     }

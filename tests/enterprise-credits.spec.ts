@@ -264,4 +264,23 @@ describe('fetchCredits → enterprise cycle fallback', () => {
     expect(credits.total).toBe(19_000)
     expect(credits.accounts[0]?.total).toBe(20_000)
   })
+
+  it('reads a zoneless cycleEndTime as Beijing time, not the host timezone', async () => {
+    route({
+      personal: personalEnvelope([]),
+      enterprise: enterpriseEnvelope({ credit: 0, limitNum: 100, cycleEndTime: '2026-11-17 23:59:59' }),
+    })
+    const credits = await new CodeBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+    // Both sides are absolute instants, so the assertion holds on any host timezone.
+    expect(credits.accounts[0]?.expireAtMs).toBe(Date.parse('2026-11-17T23:59:59+08:00'))
+  })
+
+  it('keeps a cycleEndTime that already carries its own timezone', async () => {
+    route({
+      personal: personalEnvelope([]),
+      enterprise: enterpriseEnvelope({ credit: 0, limitNum: 100, cycleEndTime: '2026-11-17T23:59:59Z' }),
+    })
+    const credits = await new CodeBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+    expect(credits.accounts[0]?.expireAtMs).toBe(Date.parse('2026-11-17T23:59:59Z'))
+  })
 })

@@ -51,13 +51,15 @@ function requestOnce(options: {
   port: number
   method: string
   headers: Record<string, string>
+  /** Defaults to the status path; override to exercise query variants. */
+  path?: string
 }): Promise<{ status: number, body: string }> {
   return new Promise((resolve, reject) => {
     const outgoing = request({
       host: '127.0.0.1',
       port: options.port,
       method: options.method,
-      path: CODEBUDDY_STATUS_PATH,
+      path: options.path ?? CODEBUDDY_STATUS_PATH,
       headers: options.headers,
     }, (res) => {
       const chunks: Buffer[] = []
@@ -194,6 +196,43 @@ describe('status document catalog and credits cache', () => {
     const deps = depsWithCatalog(() => [])
     await codeBuddyWebStatus(deps)
     await codeBuddyWebStatus(deps)
+    expect(creditCounts.count).toBe(2)
+  })
+
+  it('skips the memo when a fresh credit reading is requested', async () => {
+    creditCounts.count = 0
+    const cache: { entry?: { at: number; credits: CodeBuddyWebCredits } } = {}
+    const deps = depsWithCatalog(() => [])
+    await codeBuddyWebStatus(deps, cache)
+    await codeBuddyWebStatus(deps, cache)
+    expect(creditCounts.count).toBe(1)
+    // The dock's settle read must not be served the pre-turn answer: the
+    // per-turn figure is a difference, and a stale bound makes it zero.
+    await codeBuddyWebStatus(deps, cache, { freshCredits: true })
+    expect(creditCounts.count).toBe(2)
+  })
+
+  it('memoizes again for the poll that follows a fresh read', async () => {
+    creditCounts.count = 0
+    const cache: { entry?: { at: number; credits: CodeBuddyWebCredits } } = {}
+    const deps = depsWithCatalog(() => [])
+    await codeBuddyWebStatus(deps, cache, { freshCredits: true })
+    await codeBuddyWebStatus(deps, cache)
+    expect(creditCounts.count).toBe(1)
+  })
+
+  it('honours ?credits=fresh on the status route', async () => {
+    creditCounts.count = 0
+    const cache: { entry?: { at: number; credits: CodeBuddyWebCredits } } = {}
+    const server = createServer(codeBuddyStatusHandler(depsWithCatalog(() => []), cache))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as { port: number }
+    CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
+    const headers = { host: `127.0.0.1:${String(port)}` }
+    await requestOnce({ port, method: 'GET', headers })
+    await requestOnce({ port, method: 'GET', headers })
+    expect(creditCounts.count).toBe(1)
+    await requestOnce({ port, method: 'GET', headers, path: `${CODEBUDDY_STATUS_PATH}?credits=fresh` })
     expect(creditCounts.count).toBe(2)
   })
 })

@@ -120,6 +120,17 @@ export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShi
   const logger = options.logger
   const turnIdFor = options.turnIdFor
 
+  /**
+   * Sessions already reported for a missed turn id. The fallback degrades
+   * silently by design — the request succeeds either way, so nothing surfaces
+   * it — and that silence is the problem: after a pi-ai or host change the
+   * headers simply stop arriving and one upstream turn starts landing as
+   * several records again, with no trace on this side.
+   */
+  const turnFallbackWarned = new Set<string>()
+  /** Cap on remembered sessions, so a long-lived host cannot grow this set. */
+  const TURN_FALLBACK_WARN_LIMIT = 64
+
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
   // The shim never forwards it upstream — the real credential comes from the
@@ -226,7 +237,19 @@ export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShi
     // roles/tool_choice: the fallback fingerprint only needs the messages
     // array, but reading the original keeps it independent of those rewrites.
     // The tracker's turn id (when the loop has one) wins over the fingerprint.
-    const turnHeaders = conversationHeaders(req.headers, raw, turnIdFor?.(sessionIdOf(req.headers)))
+    const sessionId = sessionIdOf(req.headers)
+    const turnId = turnIdFor?.(sessionId)
+    // A session header that yields no turn id means the tracker never matched:
+    // either the host stopped sending the affinity headers or it sends an id
+    // that differs from `agent.session.id`. Say so once per session instead of
+    // silently shipping the drifty fingerprint.
+    if (sessionId !== undefined && turnId === undefined
+      && !turnFallbackWarned.has(sessionId) && turnFallbackWarned.size < TURN_FALLBACK_WARN_LIMIT) {
+      turnFallbackWarned.add(sessionId)
+      // `logger` is optional (tests and headless use pass none), so never call it unguarded.
+      logger?.warn(`[codebuddy-cli] no turn id for session ${sessionId}; conversation headers fall back to the request-body fingerprint, which can split one turn into several upstream records`)
+    }
+    const turnHeaders = conversationHeaders(req.headers, raw, turnId)
     const prepared = prepareChatBody(raw)
 
     const controller = new AbortController()
