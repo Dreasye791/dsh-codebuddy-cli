@@ -63,14 +63,25 @@ describe('prepareChatBody', () => {
 
 /**
  * The upstream answers `400 code 11128 "Illegal API invocation from an
- * unapproved channel"` when a system message *begins* with a specific sentence.
- * Measured 2026-10-21: one leading space, one leading newline, or the same
- * sentence past offset 0 all return 200. So the fix is a prefix rewrite, and
- * these tests pin exactly that — no more, no less.
+ * unapproved channel"` on some system messages. The trigger is the harness
+ * brand name inside the prompt, not a header or channel field.
+ *
+ * Two measurements, because the first fix was too narrow:
+ *   2026-10-21 — a 5932-char prompt failed only on the exact leading sentence;
+ *                one leading space, one leading newline, or a reword returned
+ *                200. That looked like an exact prefix match.
+ *   2026-10-22 — a 9592-char prompt still failed after that prefix rewrite.
+ *                Replacing its third `DeepSeek Harness` alone cleared it, while
+ *                that fragment alone returned 200 and a failing 2000-char block
+ *                split in half left both halves passing. So the rule depends on
+ *                the prompt as a whole and any occurrence can participate.
+ *
+ * The tests below pin the widened contract: rewrite the leading sentence, then
+ * neutralise every brand occurrence, and leave everything else byte-identical.
  */
-describe('system prefix rewrite (11128 channel check)', () => {
+describe('system sanitising (11128 channel check)', () => {
   const BANNED = 'You are an AI agent powered by DeepSeek Harness.'
-  const SAFE = 'You are an AI agent running inside DeepSeek Harness.'
+  const SAFE = 'You are an AI agent running inside the host application.'
 
   /** Run one body through prepareChatBody and hand back the first message. */
   function first(messages: unknown[]): Record<string, unknown> {
@@ -81,8 +92,27 @@ describe('system prefix rewrite (11128 channel check)', () => {
   it('rewrites the banned sentence at offset 0 of a system message', () => {
     const message = first([{ role: 'system', content: `${BANNED}\n\nBe helpful.` }])
     expect(message['content']).toBe(`${SAFE}\n\nBe helpful.`)
-    // The product name survives: the rewrite must not erase attribution.
-    expect(String(message['content'])).toContain('DeepSeek Harness')
+  })
+
+  // The regression that motivated widening: a brand mention far from offset 0
+  // kept the request blocked even though the leading sentence was already safe.
+  it('neutralises a brand mention that is not at offset 0', () => {
+    const content = 'Intro.\n\nSee the DeepSeek Harness Web GUI for details.'
+    expect(first([{ role: 'system', content }])['content'])
+      .toBe('Intro.\n\nSee the the host application Web GUI for details.')
+  })
+
+  it('leaves no brand occurrence behind anywhere in a long prompt', () => {
+    const content = [
+      'You are an AI agent powered by DeepSeek Harness.',
+      'The DeepSeek Harness implementation checkout lives elsewhere.',
+      'You interact through the DeepSeek Harness Web GUI.',
+    ].join('\n\n')
+    const out = String(first([{ role: 'system', content }])['content'])
+    expect(out).not.toMatch(/deepseek\s+harness/i)
+    // Case-insensitive, so a lower-case mention is caught too.
+    expect(String(first([{ role: 'system', content: 'by deepseek harness today' }])['content']))
+      .toBe('by the host application today')
   })
 
   it('leaves the rest of the prompt byte-identical', () => {
@@ -91,8 +121,11 @@ describe('system prefix rewrite (11128 channel check)', () => {
     expect(message['content']).toBe(SAFE + tail)
   })
 
-  it('does not touch a sentence that is not at offset 0', () => {
-    const content = `Intro line.\n${BANNED}\nMore.`
+  // Sanitising is positional-agnostic now, so a mid-prompt mention is rewritten
+  // too — that is the whole point of the widening. What must stay true is that
+  // unrelated text is untouched.
+  it('leaves unrelated text in a non-leading position untouched', () => {
+    const content = 'Intro line.\nPlain prose with no brand name.\nMore.'
     expect(first([{ role: 'system', content }])['content']).toBe(content)
   })
 
