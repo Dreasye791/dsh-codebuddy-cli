@@ -59,6 +59,73 @@ describe('prepareChatBody', () => {
     expect(roles).toEqual(['system', 'user'])
     expect(body['reasoning_effort']).toBe('max')
   })
+
+  it('rewrites the harness identity banner in a system message', () => {
+    const content = 'You are an AI agent powered by DeepSeek Harness. Use tools carefully.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{ role: 'developer', content }, { role: 'user', content: 'hi' }],
+    })))
+    const system = body['messages'][0] as { role: string, content: string }
+    expect(system.role).toBe('system')
+    expect(system.content).toBe('You are an AI agent. Use tools carefully.')
+  })
+
+  it('rewrites the paired Web GUI sentences in text shards of a system message', () => {
+    const first = 'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names.'
+    const second = 'When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{
+        role: 'system',
+        content: [{ type: 'text', text: `${first} ${second} The browser provides no implicit DOM.` }],
+      }],
+    })))
+    const text = (body['messages'][0] as { content: { type: string, text: string }[] }).content[0]!.text
+    expect(text).not.toContain('DeepSeek Harness')
+    expect(text).toContain('You are interacting with the user through the Web GUI whose URL the runtime context names.')
+    expect(text).toContain('and names no other target, that reference means this GUI.')
+    expect(text).toContain('The browser provides no implicit DOM.')
+  })
+
+  it('rewrites the legacy Web GUI paragraph that embedded the URL directly', () => {
+    const content = 'You are interacting with the user through the DeepSeek Harness Web GUI at http://127.0.0.1:58031/. Do not start a replacement server.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{ role: 'system', content }],
+    })))
+    expect((body['messages'][0] as { content: string }).content)
+      .toBe('You are interacting with the user through the Web GUI at http://127.0.0.1:58031/. Do not start a replacement server.')
+  })
+
+  it('scrubs fingerprints an assistant message quotes but leaves user and tool roles verbatim', () => {
+    const quoted = 'You are an AI agent powered by DeepSeek Harness. When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [
+        { role: 'assistant', content: `The prompt says: ${quoted}` },
+        { role: 'user', content: `Repeat after me: ${quoted}` },
+        { role: 'tool', content: `grep hit: ${quoted}`, tool_call_id: 'call-1' },
+      ],
+    })))
+    const messages = body['messages'] as { role: string, content: string }[]
+    const assistant = messages[0]!
+    const user = messages[1]!
+    const tool = messages[2]!
+    expect(assistant.content).not.toContain('DeepSeek Harness')
+    expect(assistant.content).toContain('The prompt says: You are an AI agent.')
+    expect(user.content).toBe(`Repeat after me: ${quoted}`)
+    expect(tool.content).toBe(`grep hit: ${quoted}`)
+  })
+
+  it('rewrites the top-level system string when a body carries one', () => {
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      system: 'You are an AI agent powered by DeepSeek Harness.',
+      messages: [{ role: 'user', content: 'hi' }],
+    })))
+    expect(body['system']).toBe('You are an AI agent.')
+  })
 })
 
 describe('classifyUpstreamError', () => {
