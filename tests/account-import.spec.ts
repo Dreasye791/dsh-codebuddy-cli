@@ -314,14 +314,14 @@ describe('import account route', () => {
     expect(await readAccountsFile(harness.dir)).toBe('<<absent>>')
   })
 
-  it('rejects an absent Origin', async () => {
+  it('accepts an absent Origin (DSH Desktop strips it) and still probes', async () => {
     const harness = await startImportServer({
       refresh: async () => ({ accessToken: 'AT-NEW' }),
       fetchModels: async () => [{ id: 'model-a' }],
     })
     const answer = await postImport(harness.port, { refreshToken: 'RT' }, { origin: null })
-    expect(answer.status).toBe(403)
-    expect(harness.probes).toHaveLength(0)
+    expect(answer.status).not.toBe(403)
+    expect(harness.probes.length).toBeGreaterThan(0)
   })
 
   it('rejects a non-JSON content type', async () => {

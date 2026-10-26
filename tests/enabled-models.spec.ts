@@ -221,14 +221,14 @@ describe('enabled-model write route', () => {
     expect(response.status).toBe(405)
   })
 
-  it('requires an Origin header on the mutating route', async () => {
+  it('accepts a POST without an Origin header (DSH Desktop strips it)', async () => {
     const port = await startWriteServer(deps({}))
     const response = await postOnce({
       port,
       headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
       body: JSON.stringify({ enabledModels: [] }),
     })
-    expect(response.status).toBe(403)
+    expect(response.status).toBe(200)
   })
 
   it('drops a cross-origin Origin', async () => {

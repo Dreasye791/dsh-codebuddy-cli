@@ -286,14 +286,30 @@ describe('dock preference route', () => {
     expect(response.status).toBe(501)
   })
 
-  it('refuses a POST without an Origin header', async () => {
-    const port = await startPreferenceServer(async () => true)
+  it('accepts a POST without an Origin header (DSH Desktop strips it)', async () => {
+    const seen: boolean[] = []
+    const port = await startPreferenceServer(async (value) => {
+      seen.push(value)
+      return true
+    })
     const response = await requestPreference({
       port, method: 'POST',
       headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
       body: JSON.stringify({ showDockOnOtherProviders: true }),
     })
+    expect(response.status).toBe(200)
+    expect(seen).toEqual([true])
+  })
+
+  it('drops a POST whose Origin is not loopback', async () => {
+    const port = await startPreferenceServer(async () => true)
+    const response = await requestPreference({
+      port, method: 'POST',
+      headers: { host: `127.0.0.1:${String(port)}`, origin: 'https://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ showDockOnOtherProviders: true }),
+    })
     expect(response.status).toBe(403)
+    expect(response.body).toContain('request-not-trusted')
   })
 })
 
@@ -370,12 +386,22 @@ describe('check-in route gate', () => {
     expect(seen).toEqual(['at'])
   })
 
-  it('refuses a POST without an Origin header', async () => {
+  it('accepts a POST without an Origin header (DSH Desktop strips it)', async () => {
     const port = await startCheckInServer(async () => ({ status: 'ok', message: '' }))
     const response = await requestCheckIn({
       port, method: 'POST', headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
     })
+    expect(response.status).not.toBe(403)
+  })
+
+  it('drops a POST whose Origin is not loopback', async () => {
+    const port = await startCheckInServer(async () => ({ status: 'ok', message: '' }))
+    const response = await requestCheckIn({
+      port, method: 'POST',
+      headers: { host: `127.0.0.1:${String(port)}`, origin: 'https://evil.example', 'content-type': 'application/json' },
+    })
     expect(response.status).toBe(403)
+    expect(response.body).toContain('request-not-trusted')
   })
 
   it('drops a request whose Host is not loopback', async () => {
@@ -617,7 +643,7 @@ describe('account management routes', () => {
     expect(response.status).toBe(404)
   })
 
-  it('account routes refuse requests without an Origin header', async () => {
+  it('account routes accept requests without an Origin header (DSH Desktop strips it)', async () => {
     const { deps } = await makeDeps()
     const port = await startAccountServer(deps)
     const response = await requestOnce({
@@ -625,7 +651,19 @@ describe('account management routes', () => {
       headers: { host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
       body: JSON.stringify({ id: 'x' }),
     })
+    expect(response.status).not.toBe(403)
+  })
+
+  it('account routes drop a request whose Origin is not loopback', async () => {
+    const { deps } = await makeDeps()
+    const port = await startAccountServer(deps)
+    const response = await requestOnce({
+      port, method: 'POST', path: CODEBUDDY_SWITCH_ACCOUNT_PATH,
+      headers: { host: `127.0.0.1:${String(port)}`, origin: 'https://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'x' }),
+    })
     expect(response.status).toBe(403)
+    expect(response.body).toContain('request-not-trusted')
   })
 
   it('withAccounts injects stored accounts into a signed-in document', async () => {
