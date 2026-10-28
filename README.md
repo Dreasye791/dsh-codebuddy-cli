@@ -36,8 +36,10 @@
 dsh plugin --profile web add dsh-codebuddy-cli
 dsh web
 
-# 或从 GitHub 源码安装
+# 或从 GitHub 源码安装（fork 版本把仓库地址换成你自己的）
 dsh plugin --profile web add github:fu827707013/dsh-codebuddy-cli
+# 建议再用 #<commit> 锁定版本，避免跟随默认分支漂移：
+# dsh plugin --profile web add github:<owner>/dsh-codebuddy-cli#<commit>
 dsh web
 
 # Desktop（DSH Desktop 桌面版）
@@ -48,6 +50,42 @@ dsh --profile desktop
 安装后，在对应界面的模型选择器里切换到 CodeBuddy 模型即可使用；Web 下设置卡片可查看账号信息、令牌有效期与剩余积分，TUI 下可在 `/settings` 里配置 `authFile`。
 
 > **TUI 用户暂缓安装**：终端界面插件在 DSH 0.1.2 上的适配尚未完成，同类插件实测在 TUI 下安装会导致 DSH 启动崩溃（报 `events is not iterable`）。建议 TUI 用户等终端界面插件发布适配版本后再安装本插件。本插件已在 **Web** profile 下完整验证；Desktop 与 TUI 未做验证。
+
+## 从源码更新
+
+仓库提交了预构建产物（`lib/`，未被 `.gitignore` 排除），插件 `main` 指向 `lib/index.js`。因此**从源码更新必须重新构建**：
+
+```sh
+git -C <repo> pull
+pnpm install     # 仅当依赖有变动
+pnpm build       # 关键：tsdown 重新生成 lib/
+# 然后重启 DSH（桌面版 / Web 进程）
+```
+
+> **只 `git pull` 不 `pnpm build`，运行的仍是旧代码。**
+> 实测踩过：修复提交 `cf59c9a`（中性化品牌名，修掉长 system prompt 触发的 `11128`）入库 3 天后，某个部署目录仍跑着修复前的构建，上游持续返回 `code 11128 Illegal API invocation from an unapproved channel` —— 从代码与日志都看不出问题，最后靠比对 `lib/index.js` 的 md5 才定位。
+>
+> `package.json` 里**没有** `prepare` / `prepack` / `postinstall`，所以安装器不会替你构建；`lib/` 是否最新完全取决于提交者。
+
+提交前自检产物是否最新：
+
+```sh
+pnpm run check:build    # = build 后 `git diff --exit-code -- lib`；非零退出 = 忘了提交 lib
+```
+
+更新后自检：
+
+```sh
+dsh plugin --profile <web|desktop> exec dsh-codebuddy-cli doctor
+```
+
+**哪些人需要这一步**：
+
+| 安装方式 | 更新怎么做 | 需要 build？ |
+| --- | --- | --- |
+| registry（`dsh plugin add dsh-codebuddy-cli`） | 装新版本 | ❌ 包内已含 `lib/` |
+| git（`dsh plugin add github:owner/repo#<commit>`） | 换 commit 重新 add | ❌ 仓库内已含 `lib/` |
+| `link:` / junction 指向源码仓（开发态） | `pull` → `pnpm build` → 重启 | ✅ |
 
 ## 认证文件位置
 

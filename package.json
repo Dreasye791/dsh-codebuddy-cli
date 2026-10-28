@@ -26,7 +26,8 @@
     "build": "tsdown",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "check:build": "pnpm run build && git diff --exit-code -- lib"
   },
   "exports": {
     ".": {
