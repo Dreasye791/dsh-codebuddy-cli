@@ -98,6 +98,29 @@ describe('prepareChatBody', () => {
       .toBe('You are interacting with the user through the Web GUI at http://127.0.0.1:58031/. Do not start a replacement server.')
   })
 
+  it('rewrites the @-file-reference paragraph that trips 11128 as a whole', () => {
+    // `FILE_REFERENCE_PROMPT` from dsh-file-reference. Measured in issue #12:
+    // the full paragraph is rejected, every sentence of it passes alone.
+    const content = [
+      'Tokens prefixed with @ are paths the user explicitly referenced.',
+      'Relative paths resolve from the workspace root; absolute paths identify files or directories on the host.',
+      'A trailing slash marks a directory: list it when its contents matter.',
+      'Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading.',
+      '@"..." quotes a path containing spaces.',
+    ].join(' ')
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{ role: 'system', content }],
+    })))
+    const scrubbed = (body['messages'][0] as { content: string }).content
+    expect(scrubbed).not.toContain('Tokens prefixed with @')
+    expect(scrubbed).toContain('A token prefixed with @ names a path the user explicitly referenced.')
+    // The rest of the paragraph must survive untouched — the channel check
+    // needs the whole block, one reworded sentence is enough to clear it.
+    expect(scrubbed).toContain('A trailing slash marks a directory: list it when its contents matter.')
+    expect(scrubbed).toContain('@"..." quotes a path containing spaces.')
+  })
+
   it('scrubs fingerprints an assistant message quotes but leaves user and tool roles verbatim', () => {
     const quoted = 'You are an AI agent powered by DeepSeek Harness. When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.'
     const body = JSON.parse(prepareChatBody(JSON.stringify({

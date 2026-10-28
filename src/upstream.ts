@@ -581,13 +581,15 @@ function normalizeDeveloperRole(obj: Record<string, unknown>): void {
  * The upstream answers HTTP 400 code 11128 ("Illegal API invocation from an
  * unapproved channel") when a non-user role carries another harness's prompt
  * fingerprint. The check is exact-phrase, not semantic: the identity banner
- * trips it alone, and the two Web-GUI orientation sentences trip it only when
- * both appear verbatim. Each rewrite therefore rewords its sentence while
- * keeping what it tells the model — the Web GUI stays a Web GUI (an issue
- * suggestion to call it a "command-line interface" would mislead the model
- * about its environment and is deliberately not taken). The third entry is the
- * prefix of the legacy paragraph that embedded the GUI URL directly instead of
- * naming it through the runtime context, so any URL in that slot is covered.
+ * trips it alone, the two Web-GUI orientation sentences trip it only when both
+ * appear verbatim, and the whole `@`-file-reference paragraph trips it even
+ * though none of its sentences does on its own. Each rewrite therefore rewords
+ * one sentence while keeping what it tells the model — the Web GUI stays a Web
+ * GUI (an issue suggestion to call it a "command-line interface" would mislead
+ * the model about its environment and is deliberately not taken). The third
+ * entry is the prefix of the legacy paragraph that embedded the GUI URL
+ * directly instead of naming it through the runtime context, so any URL in that
+ * slot is covered.
  */
 const HARNESS_FINGERPRINT_REWRITES: readonly {
   readonly find: string
@@ -608,6 +610,17 @@ const HARNESS_FINGERPRINT_REWRITES: readonly {
   {
     find: 'When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.',
     replacement: 'When the user refers to "this page", "this GUI", or "this app" and names no other target, that reference means this GUI.',
+  },
+  {
+    // `FILE_REFERENCE_PROMPT` from `dsh-file-reference`, rendered as one
+    // paragraph of the system prompt. Unlike the entries above it is benign
+    // prose with no product name, yet the whole paragraph trips the check
+    // (measured in issue #12: each sentence alone passes, all of them together
+    // do not). Rewording the opening sentence is the only single-sentence edit
+    // that clears it — the other four sentences were each tried in place and
+    // still returned 11128.
+    find: 'Tokens prefixed with @ are paths the user explicitly referenced.',
+    replacement: 'A token prefixed with @ names a path the user explicitly referenced.',
   },
 ]
 
