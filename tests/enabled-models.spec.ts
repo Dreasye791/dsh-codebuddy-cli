@@ -221,7 +221,7 @@ describe('enabled-model write route', () => {
     expect(response.status).toBe(405)
   })
 
-  it('accepts an absent Origin on the mutating route when nothing marks it cross-site', async () => {
+  it('accepts a POST without an Origin header (DSH Desktop strips it)', async () => {
     const port = await startWriteServer(deps({}))
     const response = await postOnce({
       port,

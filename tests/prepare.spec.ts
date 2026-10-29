@@ -59,6 +59,98 @@ describe('prepareChatBody', () => {
     expect(roles).toEqual(['system', 'user'])
     expect(body['reasoning_effort']).toBe('max')
   })
+
+  it('rewrites the harness identity banner in a system message', () => {
+    const content = 'You are an AI agent powered by DeepSeek Harness. Use tools carefully.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{ role: 'developer', content }, { role: 'user', content: 'hi' }],
+    })))
+    const system = body['messages'][0] as { role: string, content: string }
+    expect(system.role).toBe('system')
+    expect(system.content).toBe('You are an AI agent. Use tools carefully.')
+  })
+
+  it('rewrites the paired Web GUI sentences in text shards of a system message', () => {
+    const first = 'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names.'
+    const second = 'When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{
+        role: 'system',
+        content: [{ type: 'text', text: `${first} ${second} The browser provides no implicit DOM.` }],
+      }],
+    })))
+    const text = (body['messages'][0] as { content: { type: string, text: string }[] }).content[0]!.text
+    expect(text).not.toContain('DeepSeek Harness')
+    expect(text).toContain('You are interacting with the user through the Web GUI whose URL the runtime context names.')
+    expect(text).toContain('and names no other target, that reference means this GUI.')
+    expect(text).toContain('The browser provides no implicit DOM.')
+  })
+
+  it('rewrites the legacy Web GUI paragraph that embedded the URL directly', () => {
+    const content = 'You are interacting with the user through the DeepSeek Harness Web GUI at http://127.0.0.1:58031/. Do not start a replacement server.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{ role: 'system', content }],
+    })))
+    expect((body['messages'][0] as { content: string }).content)
+      .toBe('You are interacting with the user through the Web GUI at http://127.0.0.1:58031/. Do not start a replacement server.')
+  })
+
+  it('rewrites the @-file-reference paragraph that trips 11128 as a whole', () => {
+    // `FILE_REFERENCE_PROMPT` from dsh-file-reference. Measured in issue #12:
+    // the full paragraph is rejected, every sentence of it passes alone.
+    const content = [
+      'Tokens prefixed with @ are paths the user explicitly referenced.',
+      'Relative paths resolve from the workspace root; absolute paths identify files or directories on the host.',
+      'A trailing slash marks a directory: list it when its contents matter.',
+      'Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading.',
+      '@"..." quotes a path containing spaces.',
+    ].join(' ')
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [{ role: 'system', content }],
+    })))
+    const scrubbed = (body['messages'][0] as { content: string }).content
+    expect(scrubbed).not.toContain('Tokens prefixed with @')
+    expect(scrubbed).toContain('A token beginning with @ names a path the user pointed to.')
+    expect(scrubbed).toContain('A relative path is resolved against the workspace root, while an absolute path names a file or directory on the host.')
+    // The rest of the paragraph must survive untouched — the channel check
+    // needs the whole block, and the opening pair alone is enough to clear it.
+    expect(scrubbed).toContain('A trailing slash marks a directory: list it when its contents matter.')
+    expect(scrubbed).toContain('Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading.')
+    expect(scrubbed).toContain('@"..." quotes a path containing spaces.')
+  })
+
+  it('scrubs fingerprints an assistant message quotes but leaves user and tool roles verbatim', () => {
+    const quoted = 'You are an AI agent powered by DeepSeek Harness. When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.'
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [
+        { role: 'assistant', content: `The prompt says: ${quoted}` },
+        { role: 'user', content: `Repeat after me: ${quoted}` },
+        { role: 'tool', content: `grep hit: ${quoted}`, tool_call_id: 'call-1' },
+      ],
+    })))
+    const messages = body['messages'] as { role: string, content: string }[]
+    const assistant = messages[0]!
+    const user = messages[1]!
+    const tool = messages[2]!
+    expect(assistant.content).not.toContain('DeepSeek Harness')
+    expect(assistant.content).toContain('The prompt says: You are an AI agent.')
+    expect(user.content).toBe(`Repeat after me: ${quoted}`)
+    expect(tool.content).toBe(`grep hit: ${quoted}`)
+  })
+
+  it('rewrites the top-level system string when a body carries one', () => {
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      system: 'You are an AI agent powered by DeepSeek Harness.',
+      messages: [{ role: 'user', content: 'hi' }],
+    })))
+    expect(body['system']).toBe('You are an AI agent.')
+  })
 })
 
 /**
@@ -81,7 +173,7 @@ describe('prepareChatBody', () => {
  */
 describe('system sanitising (11128 channel check)', () => {
   const BANNED = 'You are an AI agent powered by DeepSeek Harness.'
-  const SAFE = 'You are an AI agent running inside the host application.'
+  const SAFE = 'You are an AI agent.'
 
   /** Run one body through prepareChatBody and hand back the first message. */
   function first(messages: unknown[]): Record<string, unknown> {
@@ -129,7 +221,10 @@ describe('system sanitising (11128 channel check)', () => {
     expect(first([{ role: 'system', content }])['content']).toBe(content)
   })
 
-  it('does not touch the same sentence in a user or assistant message', () => {
+  it('scrubs a quoted copy in an assistant message but leaves the user message alone', () => {
+    // A reply that quotes the banner verbatim trips the same check on the next
+    // turn (issue #10), so assistant content is scrubbed; what the user typed
+    // must survive untouched.
     const content = `${BANNED}\nuser text`
     const body = JSON.parse(prepareChatBody(JSON.stringify({
       model: 'auto',
@@ -139,7 +234,7 @@ describe('system sanitising (11128 channel check)', () => {
       ],
     })))
     expect(body['messages'][0]['content']).toBe(content)
-    expect(body['messages'][1]['content']).toBe(content)
+    expect(body['messages'][1]['content']).toBe(`${SAFE}\nuser text`)
   })
 
   it('rewrites a text part inside a multipart system content array', () => {
@@ -249,7 +344,7 @@ describe('system sanitising (11128 channel check)', () => {
     expect(first([{ role: 'system', content: once }])['content']).toBe(once)
   })
 
-  it('does not rewrite the host paragraph in user or assistant messages', () => {
+  it('rewrites the host paragraph in an assistant message but leaves the user message alone', () => {
     const body = JSON.parse(prepareChatBody(JSON.stringify({
       model: 'auto',
       messages: [
@@ -258,7 +353,7 @@ describe('system sanitising (11128 channel check)', () => {
       ],
     })))
     expect(body['messages'][0]['content']).toBe(FILE_REFERENCE)
-    expect(body['messages'][1]['content']).toBe(FILE_REFERENCE)
+    expect(body['messages'][1]['content']).toBe(FILE_REFERENCE_SAFE)
   })
 })
 

@@ -531,9 +531,10 @@ function parseEnabledModels(raw: string, models: readonly CodeBuddyModelInfo[]):
  * The enabled-model write handler.
  *
  * A state-changing route, so the loopback gate is stricter than the status
- * GET's: the browser attaches an `Origin` to this POST, and a request without
- * one is refused rather than trusted on Host alone. Content type must be JSON,
- * which drops HTML-form simple requests as well.
+ * GET's: an `Origin` that is present must be loopback, which drops cross-site
+ * pages. An absent Origin passes — see `checkLoopbackPost` for why the DSH
+ * Desktop app never sends one. Content type must be JSON, which drops
+ * HTML-form simple requests as well.
  */
 export function codeBuddyEnabledModelsHandler(
   deps: CodeBuddyStatusRouteOptions,
@@ -627,10 +628,11 @@ export function codeBuddyDockPreferenceHandler(
 /**
  * The daily check-in write handler.
  *
- * Same strict gate as the enabled-model write: POST only, loopback Host and a
- * mandatory loopback `Origin`, JSON content type. The upstream answer is a
- * plain outcome document, so the card never sees upstream error text without
- * a status classification. A missing executor answers 501 instead of failing.
+ * Same strict gate as the enabled-model write: POST only, loopback Host, a
+ * loopback `Origin` when one is present, JSON content type. The upstream answer
+ * is a plain outcome document, so the card never sees upstream error text
+ * without a status classification. A missing executor answers 501 instead of
+ * failing.
  */
 export function codeBuddyCheckInHandler(
   deps: CodeBuddyStatusRouteOptions,
@@ -761,7 +763,25 @@ export function registerCodeBuddyStatusRoute(ctx: Context, deps: CodeBuddyStatus
   }, 'dsh-codebuddy-cli: Web status route')
 }
 
-/** Check loopback trust + JSON content type for a mutating POST. */
+/**
+ * Check loopback trust + JSON content type for a mutating POST.
+ *
+ * An *absent* Origin is allowed on purpose. `originIsLoopback` already rejects
+ * every Origin that is present but not loopback, so a cross-site page cannot
+ * reach these routes: its browser-sent Origin fails that check first. What an
+ * absent Origin means is "not a cross-site browser request", and the DSH
+ * Desktop app is exactly that case — it serves the UI from `dsh-app://app` and
+ * proxies every non-static request through `forwardWebRequest`, which strips
+ * `origin` (along with `host`, `cookie` and `sec-fetch-site`) before forwarding
+ * to the Host. Demanding the header therefore broke every write route in the
+ * desktop app while adding no protection a plain `curl` did not already have.
+ *
+ * The missing header is not simply waved through: `isTrustedLocalRequest`
+ * refuses an absent-Origin request that a browser itself marked
+ * `sec-fetch-site: cross-site` or `same-site`. That header is forbidden to page
+ * script, so the desktop proxy stripping it only weakens a check that no
+ * cross-site page could have passed anyway.
+ */
 function checkLoopbackPost(req: IncomingMessage, res: ServerResponse): boolean {
   if (!isTrustedLocalRequest(req.headers)) {
     json(res, 403, { error: 'request-not-trusted' })

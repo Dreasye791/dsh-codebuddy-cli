@@ -560,9 +560,9 @@ export function prepareChatBody(source: string): string {
   const obj = body as Record<string, unknown>
   obj['stream'] = true
   normalizeDeveloperRole(obj)
+  neutralizeHarnessFingerprints(obj)
   normalizeToolChoice(obj)
   normalizeReasoningEffort(obj)
-  normalizeSystemPrompt(obj)
   return JSON.stringify(obj)
 }
 
@@ -690,11 +690,12 @@ export function turnFingerprint(body: string): string | undefined {
  *   {@link HOST_SEGMENT_REWRITES}. The check still reads the prompt as a
  *   whole: the same paragraph sits in a 56316-char prompt that returns 200.
  *
- * Hence: rewrite the leading sentence for readability, then neutralise every
- * remaining brand occurrence. Both prompt sizes above return 200 afterwards.
+ * Hence the three-layer order in {@link sanitizeSystemText}: reword the
+ * blacklisted sentences first (position-independent, so a quoted copy in an
+ * assistant message is caught too), reword the known host-injected segments
+ * next, then neutralise every remaining brand occurrence as a net. All prompt
+ * sizes above return 200 afterwards.
  */
-const BANNED_SYSTEM_PREFIX = 'You are an AI agent powered by DeepSeek Harness.'
-const SAFE_SYSTEM_PREFIX = 'You are an AI agent running inside the host application.'
 
 /**
  * Brand occurrences that trip the channel check, and what to call them instead.
@@ -742,44 +743,33 @@ const HOST_SEGMENT_REWRITES: readonly {
 ]
 
 /**
- * Sanitise one `system` text: rewrite the banned leading sentence, neutralise
- * every remaining brand occurrence, then reword known host-injected segments.
+ * Sanitise one piece of prompt text in three ordered layers.
  *
- * Everything else is returned byte-for-byte, so the caller's own instructions
- * survive untouched apart from the parts named above.
+ *   1. {@link HARNESS_FINGERPRINT_REWRITES} — verbatim blacklisted sentences,
+ *      matched position-independently so a quoted copy is caught too.
+ *   2. {@link HOST_SEGMENT_REWRITES} — host-injected segments (the `@`-file
+ *      reference pair), which have no product name of their own.
+ *   3. {@link BANNED_SYSTEM_BRANDS} — a net for any brand occurrence the two
+ *      tables above did not name, so a host-side prompt change that adds a new
+ *      mention still goes out clean.
+ *
+ * Layer 1 must run before layer 3: the brand net rewrites the product name
+ * inside the blacklisted sentences, which would leave their `find` strings
+ * unmatched. Everything else is returned byte-for-byte, so the caller's own
+ * instructions survive untouched apart from the parts named above.
  */
 function sanitizeSystemText(text: string): string {
   let out = text
-  if (out.startsWith(BANNED_SYSTEM_PREFIX)) {
-    out = SAFE_SYSTEM_PREFIX + out.slice(BANNED_SYSTEM_PREFIX.length)
+  for (const { find, replacement } of HARNESS_FINGERPRINT_REWRITES) {
+    // split/join, not replaceAll: replacement must be taken literally, and
+    // replaceAll would read `$`-patterns into it.
+    if (out.includes(find)) out = out.split(find).join(replacement)
   }
-  for (const brand of BANNED_SYSTEM_BRANDS) out = out.replace(brand.pattern, brand.replacement)
   for (const segment of HOST_SEGMENT_REWRITES) {
     out = out.replace(segment.pattern, (_match: string, separator: string) => segment.replacement(separator))
   }
+  for (const brand of BANNED_SYSTEM_BRANDS) out = out.replace(brand.pattern, brand.replacement)
   return out
-}
-
-/** Sanitise every `system` message (string or part array). */
-function normalizeSystemPrompt(obj: Record<string, unknown>): void {
-  const messages = obj['messages']
-  if (!Array.isArray(messages)) return
-  for (const message of messages) {
-    if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
-    const wrapped = message as Record<string, unknown>
-    if (wrapped['role'] !== 'system') continue
-    const content = wrapped['content']
-    if (typeof content === 'string') {
-      wrapped['content'] = sanitizeSystemText(content)
-      continue
-    }
-    if (!Array.isArray(content)) continue
-    for (const part of content) {
-      if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
-      const wrappedPart = part as Record<string, unknown>
-      if (typeof wrappedPart['text'] === 'string') wrappedPart['text'] = sanitizeSystemText(wrappedPart['text'])
-    }
-  }
 }
 
 /**
@@ -814,6 +804,87 @@ function normalizeDeveloperRole(obj: Record<string, unknown>): void {
     if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
     const wrapped = message as Record<string, unknown>
     if (wrapped['role'] === 'developer') wrapped['role'] = 'system'
+  }
+}
+
+/**
+ * Verbatim DSH prompt sentences the CodeBuddy channel check blacklists, each
+ * with a meaning-preserving rewrite.
+ *
+ * The upstream answers HTTP 400 code 11128 ("Illegal API invocation from an
+ * unapproved channel") when a non-user role carries another harness's prompt
+ * fingerprint. The check is exact-phrase, not semantic: the identity banner
+ * trips it alone, the two Web-GUI orientation sentences trip it only when both
+ * appear verbatim, and the whole `@`-file-reference paragraph trips it even
+ * though none of its sentences does on its own. Each rewrite therefore rewords
+ * one sentence while keeping what it tells the model — the Web GUI stays a Web
+ * GUI (an issue suggestion to call it a "command-line interface" would mislead
+ * the model about its environment and is deliberately not taken). The third
+ * entry is the prefix of the legacy paragraph that embedded the GUI URL
+ * directly instead of naming it through the runtime context, so any URL in that
+ * slot is covered.
+ *
+ * The `@`-file-reference pair is deliberately *not* in this table: it is a
+ * multi-sentence segment with no product name, so it lives in
+ * {@link HOST_SEGMENT_REWRITES} where both of its measured sentences are
+ * reworded together.
+ */
+const HARNESS_FINGERPRINT_REWRITES: readonly {
+  readonly find: string
+  readonly replacement: string
+}[] = [
+  {
+    find: 'You are an AI agent powered by DeepSeek Harness.',
+    replacement: 'You are an AI agent.',
+  },
+  {
+    find: 'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names.',
+    replacement: 'You are interacting with the user through the Web GUI whose URL the runtime context names.',
+  },
+  {
+    find: 'You are interacting with the user through the DeepSeek Harness Web GUI at ',
+    replacement: 'You are interacting with the user through the Web GUI at ',
+  },
+  {
+    find: 'When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.',
+    replacement: 'When the user refers to "this page", "this GUI", or "this app" and names no other target, that reference means this GUI.',
+  },
+]
+
+/**
+ * Rewrite the DSH prompt fingerprints the channel check rejects, across every
+ * role the check reads.
+ *
+ * Only system and assistant content is scrubbed: the channel check does not
+ * read user or tool roles, and rewriting what the user said or what a tool
+ * returned would corrupt the conversation the model sees. Assistant messages
+ * are included because a reply that quoted the fingerprint sentences verbatim
+ * (issue #10 bisected one such failure to exactly that) trips the same check
+ * on the next turn. Runs after {@link normalizeDeveloperRole} so a developer
+ * message is already system here.
+ */
+function neutralizeHarnessFingerprints(obj: Record<string, unknown>): void {
+  if (typeof obj['system'] === 'string') {
+    obj['system'] = sanitizeSystemText(obj['system'])
+  }
+  const messages = obj['messages']
+  if (!Array.isArray(messages)) return
+  for (const message of messages) {
+    if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
+    const wrapped = message as Record<string, unknown>
+    if (wrapped['role'] !== 'system' && wrapped['role'] !== 'assistant') continue
+    const content = wrapped['content']
+    if (typeof content === 'string') {
+      wrapped['content'] = sanitizeSystemText(content)
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part !== 'object' || part === null || Array.isArray(part)) continue
+        const shard = part as Record<string, unknown>
+        if (shard['type'] === 'text' && typeof shard['text'] === 'string') {
+          shard['text'] = sanitizeSystemText(shard['text'])
+        }
+      }
+    }
   }
 }
 

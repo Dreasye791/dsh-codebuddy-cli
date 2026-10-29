@@ -47,9 +47,25 @@ dsh plugin --profile desktop add dsh-codebuddy-cli
 dsh --profile desktop
 ```
 
+**手动更新**到最新版（`update` 会把 `package.json` 里的版本范围刷新到最新并重装）：
+
+```sh
+# Web
+dsh plugin --profile web update dsh-codebuddy-cli
+dsh web
+
+# Desktop
+dsh plugin --profile desktop update dsh-codebuddy-cli
+dsh --profile desktop
+```
+
+更新后需要重启对应入口（`dsh web` / DSH Desktop）让新模块生效；设置卡片显示的版本号变化即代表更新成功。
+
 安装后，在对应界面的模型选择器里切换到 CodeBuddy 模型即可使用；Web 下设置卡片可查看账号信息、令牌有效期与剩余积分，TUI 下可在 `/settings` 里配置 `authFile`。
 
-> **TUI 用户暂缓安装**：终端界面插件在 DSH 0.1.2 上的适配尚未完成，同类插件实测在 TUI 下安装会导致 DSH 启动崩溃（报 `events is not iterable`）。建议 TUI 用户等终端界面插件发布适配版本后再安装本插件。本插件已在 **Web** profile 下完整验证；Desktop 与 TUI 未做验证。
+> **TUI 用户暂缓安装**：终端界面插件在 DSH 0.1.2 上的适配尚未完成，同类插件实测在 TUI 下安装会导致 DSH 启动崩溃（报 `events is not iterable`）。建议 TUI 用户等终端界面插件发布适配版本后再安装本插件。本插件已在 **Web** 与 **Desktop** profile 下验证；TUI 未做验证。
+>
+> 从 **0.4.5** 起，Desktop 桌面版的写操作（添加/切换/删除账号、保存模型选择、签到、读取积分统计）已可用。此前版本在桌面版保存配置会报 `403 {"error":"origin-required"}`，原因是桌面版转发请求时会移除 `Origin` 头。
 
 ## 从源码更新
 

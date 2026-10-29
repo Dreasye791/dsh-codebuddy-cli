@@ -315,7 +315,7 @@ describe('import account route', () => {
     expect(await readAccountsFile(harness.dir)).toBe('<<absent>>')
   })
 
-  it('accepts an absent Origin when nothing marks it cross-site', async () => {
+  it('accepts an absent Origin (DSH Desktop strips it) when nothing marks it cross-site', async () => {
     const harness = await startImportServer({
       refresh: async () => ({ accessToken: 'AT-NEW' }),
       fetchModels: async () => [{ id: 'model-a' }],

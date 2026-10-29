@@ -45,9 +45,25 @@ dsh plugin --profile desktop add dsh-codebuddy-cli
 dsh --profile desktop
 ```
 
+**Manual update** to the latest release (`update` refreshes the version range in the profile's `package.json` and reinstalls):
+
+```sh
+# Web
+dsh plugin --profile web update dsh-codebuddy-cli
+dsh web
+
+# Desktop
+dsh plugin --profile desktop update dsh-codebuddy-cli
+dsh --profile desktop
+```
+
+Restart the matching entry point afterwards (`dsh web` / DSH Desktop) so the new module is loaded; the version shown on the settings card confirms the update landed.
+
 After installing, switch to a CodeBuddy model in that interface's model picker. Under Web the settings card shows the account, token expiry, and remaining credit; under TUI the `authFile` path is configurable in `/settings`.
 
-> **TUI users: hold off for now.** The terminal interface plugin is not yet adapted to DSH 0.1.2, and a comparable plugin was measured to crash DSH on startup under TUI (`events is not iterable`). Wait for an adapted release of the terminal interface plugin before installing this one. The plugin is fully verified on the **Web** profile; Desktop and TUI are unverified.
+> **TUI users: hold off for now.** The terminal interface plugin is not yet adapted to DSH 0.1.2, and a comparable plugin was measured to crash DSH on startup under TUI (`events is not iterable`). Wait for an adapted release of the terminal interface plugin before installing this one. The plugin is verified on the **Web** and **Desktop** profiles; TUI is unverified.
+>
+> As of **0.4.5**, write operations work in DSH Desktop (add/switch/delete accounts, save model selection, check in, read credit stats). Earlier versions answered `403 {"error":"origin-required"}` on save because the desktop shell strips the `Origin` header when forwarding to the Host.
 
 ## Auth-file location
 
