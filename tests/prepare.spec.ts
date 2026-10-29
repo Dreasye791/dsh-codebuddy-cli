@@ -209,6 +209,57 @@ describe('system sanitising (11128 channel check)', () => {
     }))
     expect(turnFingerprint(banned)).toBe(turnFingerprint(safe))
   })
+
+  /**
+   * DSH injects this paragraph whenever the addressed agent has a usable `read`
+   * tool (`@deepseek-ai/dsh-file-reference`). Measured on 2026-10-28: on an
+   * 81230-char system message this was the block taking part in the 11128
+   * check; rewording just its first two sentences, with every other byte
+   * untouched, returned 200. The tail below must therefore survive verbatim.
+   */
+  const FILE_REFERENCE = 'Tokens prefixed with @ are paths the user explicitly referenced. '
+    + 'Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. '
+    + 'A trailing slash marks a directory: list it when its contents matter.'
+  const FILE_REFERENCE_SAFE = 'A token beginning with @ names a path the user pointed to. '
+    + 'A relative path is resolved against the workspace root, while an absolute path names a file or directory on the host. '
+    + 'A trailing slash marks a directory: list it when its contents matter.'
+
+  it('rewrites the host file-reference paragraph, keeping its tail byte-identical', () => {
+    const message = first([{ role: 'system', content: FILE_REFERENCE }])
+    expect(message['content']).toBe(FILE_REFERENCE_SAFE)
+  })
+
+  it('keeps the separator when the host paragraph is wrapped or reflowed', () => {
+    const wrapped = 'Intro.\n\nTokens prefixed with @ are paths the user explicitly referenced.\n'
+      + 'Relative paths resolve from the workspace root; absolute paths identify files or directories on the host.\n\nOutro.'
+    expect(first([{ role: 'system', content: wrapped }])['content']).toBe(
+      'Intro.\n\nA token beginning with @ names a path the user pointed to.\n'
+      + 'A relative path is resolved against the workspace root, while an absolute path names a file or directory on the host.\n\nOutro.',
+    )
+  })
+
+  it('rewrites the host paragraph in the middle of a long prompt', () => {
+    const content = `Long preamble.\n\n${FILE_REFERENCE}\n\nMore instructions afterwards.`
+    expect(first([{ role: 'system', content }])['content'])
+      .toBe(`Long preamble.\n\n${FILE_REFERENCE_SAFE}\n\nMore instructions afterwards.`)
+  })
+
+  it('is idempotent for the host paragraph', () => {
+    const once = first([{ role: 'system', content: FILE_REFERENCE }])['content']
+    expect(first([{ role: 'system', content: once }])['content']).toBe(once)
+  })
+
+  it('does not rewrite the host paragraph in user or assistant messages', () => {
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'auto',
+      messages: [
+        { role: 'user', content: FILE_REFERENCE },
+        { role: 'assistant', content: FILE_REFERENCE },
+      ],
+    })))
+    expect(body['messages'][0]['content']).toBe(FILE_REFERENCE)
+    expect(body['messages'][1]['content']).toBe(FILE_REFERENCE)
+  })
 })
 
 describe('classifyUpstreamError', () => {

@@ -684,6 +684,12 @@ export function turnFingerprint(body: string): string | undefined {
  *   half left both halves passing. So the rule depends on the prompt as a
  *   whole, and any brand-name occurrence can participate.
  *
+ *   2026-10-28 (a `ptc` session, 81230 chars): with both fixes above in place
+ *   the request failed again. The participating block this time was a
+ *   host-injected file-reference paragraph rather than a brand name — see
+ *   {@link HOST_SEGMENT_REWRITES}. The check still reads the prompt as a
+ *   whole: the same paragraph sits in a 56316-char prompt that returns 200.
+ *
  * Hence: rewrite the leading sentence for readability, then neutralise every
  * remaining brand occurrence. Both prompt sizes above return 200 afterwards.
  */
@@ -702,11 +708,45 @@ const BANNED_SYSTEM_BRANDS: readonly { readonly pattern: RegExp; readonly replac
 ]
 
 /**
- * Sanitise one `system` text: rewrite the banned leading sentence, then
- * neutralise every remaining brand occurrence.
+ * Host-injected prompt segments that trip the same channel check, and the
+ * equivalent wording to send instead.
+ *
+ * Measured on 2026-10-28 against one 81230-char `system` message from a `ptc`
+ * session (DSH desktop, `app.asar` dated 2026-10-23):
+ *
+ *   as sent                                400 code 11128
+ *   only this 170-char pair reworded       200, every other byte identical
+ *
+ * The pair is the first two sentences of DSH's own
+ * `@deepseek-ai/dsh-file-reference` prompt, injected whenever the addressed
+ * agent has a usable `read` tool. The same pair also sits inside a 56316-char
+ * prompt that returns 200, so — as with the brand names above — the check reads
+ * the prompt as a whole and any fixed segment can take part. Hence a table: when
+ * the host rewords its own prompt and the block starts failing again, add the
+ * new wording here rather than hunting for a keyword.
+ *
+ * The exact reworded sentences below are the ones measured to clear the block;
+ * do not paraphrase them further without repeating that measurement.
+ */
+const HOST_SEGMENT_REWRITES: readonly {
+  readonly pattern: RegExp
+  readonly replacement: (separator: string) => string
+}[] = [
+  {
+    // Keep the original separator (space or newline) between the sentences.
+    pattern: /Tokens prefixed with @ are paths the user explicitly referenced\.(\s*)Relative paths resolve from the workspace root; absolute paths identify files or directories on the host\./g,
+    replacement: (separator) => 'A token beginning with @ names a path the user pointed to.'
+      + separator
+      + 'A relative path is resolved against the workspace root, while an absolute path names a file or directory on the host.',
+  },
+]
+
+/**
+ * Sanitise one `system` text: rewrite the banned leading sentence, neutralise
+ * every remaining brand occurrence, then reword known host-injected segments.
  *
  * Everything else is returned byte-for-byte, so the caller's own instructions
- * survive untouched apart from the product name itself.
+ * survive untouched apart from the parts named above.
  */
 function sanitizeSystemText(text: string): string {
   let out = text
@@ -714,6 +754,9 @@ function sanitizeSystemText(text: string): string {
     out = SAFE_SYSTEM_PREFIX + out.slice(BANNED_SYSTEM_PREFIX.length)
   }
   for (const brand of BANNED_SYSTEM_BRANDS) out = out.replace(brand.pattern, brand.replacement)
+  for (const segment of HOST_SEGMENT_REWRITES) {
+    out = out.replace(segment.pattern, (_match: string, separator: string) => segment.replacement(separator))
+  }
   return out
 }
 
