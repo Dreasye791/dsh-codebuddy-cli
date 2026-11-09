@@ -16,6 +16,7 @@ import { createCodeBuddyShim } from './shim.ts'
 import { CodeBuddyUpstreamClient } from './upstream.ts'
 import { registerCodeBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
+import { clearShimEndpoint, writeShimEndpoint } from './shim-endpoint.ts'
 import { AccountStore } from './account-store.ts'
 import { startOAuthLogin, pollOAuthLogin } from './oauth.ts'
 import { ensureClientIdentity } from './upstream.ts'
@@ -81,6 +82,13 @@ export {
   codebuddyHostHeartbeatPath,
   type CodeBuddyHostHeartbeat,
 } from './host-heartbeat.ts'
+export {
+  CODEBUDDY_SHIM_ENDPOINT_FILENAME,
+  codebuddyShimEndpointPath,
+  clearShimEndpoint,
+  writeShimEndpoint,
+  type CodeBuddyShimEndpoint,
+} from './shim-endpoint.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'llm-codebuddy-cli'
@@ -147,6 +155,25 @@ export interface Config {
    * be turned off from the plugin's own settings card.
    */
   showDockOnOtherProviders?: boolean
+  /**
+   * Fixed port for the loopback shim, or `0`/absent to keep the OS-assigned
+   * one.
+   *
+   * Pinning it is what makes the provider usable by another local program: the
+   * plugin then publishes `$DSH_HOME/.codebuddy-shim-endpoint.json` with the
+   * base URL and bearer to send (see `src/shim-endpoint.ts`). The default keeps
+   * the endpoint private, so an untouched install exposes nothing new. Takes
+   * effect on the next host start — a listening port cannot move in place.
+   */
+  shimPort?: number
+  /**
+   * Bind address for the shim; defaults to `127.0.0.1`.
+   *
+   * Leave it on the loopback unless a container or another host must reach it.
+   * The bearer check still applies, but the port becomes reachable beyond this
+   * machine.
+   */
+  shimHost?: string
 }
 
 /**
@@ -198,6 +225,14 @@ export const Config: z<Config> = z.object({
     .description('Keep the composer credit line visible while another provider (not CodeBuddy) is selected')
     .default(true)
     .volatile(),
+  shimPort: z.number()
+    .description('Fixed port for the loopback shim; 0 keeps an OS-assigned one. A fixed port publishes the endpoint for other local OpenAI clients')
+    .default(0)
+    .volatile(),
+  shimHost: z.string()
+    .description('Bind address for the shim (default 127.0.0.1)')
+    .default('127.0.0.1')
+    .volatile(),
 }) as unknown as z<Config>
 
 /**
@@ -219,12 +254,15 @@ export function apply(ctx: Context, rawConfig: Config): void {
   // Turn boundaries for the upstream conversation headers. The tracker is
   // updated from the agent loop below; the shim reads it per request.
   const turns = createTurnTracker()
+  const pinnedPort = config.shimPort ?? 0
   const shim = createCodeBuddyShim({
     store,
     client,
     catalog,
     logger: ctx.logger,
     turnIdFor: sessionId => turns.current(sessionId),
+    ...pinnedPort > 0 ? { port: pinnedPort } : {},
+    ...config.shimHost === undefined ? {} : { host: config.shimHost },
   })
 
   // A turn starts at the loop's first step. Reading the boundary here rather
@@ -325,6 +363,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     stopped = true
     void shim.close()
     void clearHostHeartbeat()
+    // A leftover endpoint would advertise a port nobody listens on any more.
+    void clearShimEndpoint()
   })
 
   void shim.ready
@@ -383,6 +423,22 @@ export function apply(ctx: Context, rawConfig: Config): void {
         // report host health without a browser. Cleared on disposal; a stale
         // heartbeat after a crash is detected by PID in the reader.
         void writeHostHeartbeat()
+
+        // Publishing is opt-in through a pinned port. It exists for a second
+        // local program (a chat bot, an editor) that should use this account's
+        // models without holding the upstream token itself: it gets the shim
+        // URL and the shim-local bearer, and the plugin stays the only client
+        // that ever refreshes the CodeBuddy refresh_token.
+        if (pinnedPort > 0) {
+          void writeShimEndpoint({
+            baseUrl: shim.baseUrl(),
+            openaiBaseUrl: `${shim.baseUrl()}/v1`,
+            token: shim.token(),
+            models: catalog.current().map(model => model.id),
+          }).catch((error: unknown) => {
+            ctx.logger.warn('dsh-codebuddy-cli: could not publish the shim endpoint file', error)
+          })
+        }
       } catch (error: unknown) {
         ctx.logger.error('dsh-codebuddy-cli: provider registration failed', error)
         return

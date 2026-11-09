@@ -62,6 +62,19 @@ export interface CodeBuddyShimOptions {
    * shim then falls back to the body fingerprint.
    */
   turnIdFor?: (sessionId: string | undefined) => string | undefined
+  /**
+   * TCP port to listen on. `0` (the default) asks the OS for a free port, which
+   * keeps the endpoint private: nothing outside this process knows where it is.
+   * Pin a port only to let another local client use the provider; the plugin
+   * then publishes the endpoint (see `src/shim-endpoint.ts`).
+   */
+  port?: number
+  /**
+   * Bind address. Defaults to the IPv4 loopback. Widening it is a deliberate
+   * escalation: the bearer check still applies, but the port becomes reachable
+   * from other hosts.
+   */
+  host?: string
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -160,7 +173,9 @@ export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShi
     server.once('error', reject)
   })
 
-  server.listen(0, '127.0.0.1')
+  // Default: OS-assigned loopback port. A pinned port is the opt-in that makes
+  // the shim discoverable by another local client; see CodeBuddyShimOptions.
+  server.listen(options.port ?? 0, options.host ?? '127.0.0.1')
 
   const baseUrl = (): string => {
     const address = server.address()

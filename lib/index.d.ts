@@ -4,7 +4,6 @@ import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
 import { Context } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
-//#region src/client-identity.d.ts
 /**
  * CodeBuddy client identity: the headers the upstream uses to attribute a
  * request to a client product and version.
@@ -100,8 +99,6 @@ declare function clientIdentityHeaders(identity: CodeBuddyClientIdentity): Recor
  * @returns the resolved identity.
  */
 declare function resolveClientIdentity(explicitPath?: string): Promise<CodeBuddyClientIdentity>;
-//#endregion
-//#region src/status-paths.d.ts
 /** Daily check-in outcome status, already mapped for display. */
 type CodeBuddyCheckInStatus = 'ok' | 'already' | 'failed';
 /**
@@ -113,8 +110,6 @@ interface CodeBuddyCheckInOutcome {
   status: CodeBuddyCheckInStatus;
   message: string;
 }
-//#endregion
-//#region src/upstream.d.ts
 /** CodeBuddy region selected by the credential's login domain. */
 type CodeBuddyRegion = 'cn' | 'global';
 /** Upstream failure classes the shim maps onto distinct HTTP answers. */
@@ -367,8 +362,6 @@ declare class CodeBuddyUpstreamClient {
    */
   checkIn(credential: CodeBuddyCredential): Promise<CodeBuddyCheckInOutcome>;
 }
-//#endregion
-//#region src/account-store.d.ts
 /** Current on-disk format version; readers reject others. */
 declare const ACCOUNTS_FORMAT_VERSION = 1;
 /** On-disk shape of the accounts document. */
@@ -458,8 +451,6 @@ declare class AccountStore {
   /** Convert a stored account to a CodeBuddyCredential. */
   private toCredential;
 }
-//#endregion
-//#region src/auth.d.ts
 /** Normalized CodeBuddy credential, timestamps in epoch milliseconds. */
 interface CodeBuddyCredential {
   accessToken: string;
@@ -578,8 +569,6 @@ declare class CodeBuddyCredentialStore {
   /** Whether any auth-directory candidate yields a credential; diagnostics only. */
   cliFilePresent(): Promise<boolean>;
 }
-//#endregion
-//#region src/catalog.d.ts
 /** One model entry the adapter exposes. */
 type CodeBuddyModelInfo = CodeBuddyUpstreamModel;
 /**
@@ -624,8 +613,6 @@ declare class CodeBuddyCatalog {
  * @returns the models the picker should offer, in catalog order.
  */
 declare function filterEnabledModels(models: readonly CodeBuddyModelInfo[], enabled: readonly string[] | undefined): readonly CodeBuddyModelInfo[];
-//#endregion
-//#region src/shim.d.ts
 /** Minimal logger surface the plugin context already provides. */
 interface ShimLogger {
   warn(...args: unknown[]): void;
@@ -662,14 +649,25 @@ interface CodeBuddyShimOptions {
    * shim then falls back to the body fingerprint.
    */
   turnIdFor?: (sessionId: string | undefined) => string | undefined;
+  /**
+   * TCP port to listen on. `0` (the default) asks the OS for a free port, which
+   * keeps the endpoint private: nothing outside this process knows where it is.
+   * Pin a port only to let another local client use the provider; the plugin
+   * then publishes the endpoint (see `src/shim-endpoint.ts`).
+   */
+  port?: number;
+  /**
+   * Bind address. Defaults to the IPv4 loopback. Widening it is a deliberate
+   * escalation: the bearer check still applies, but the port becomes reachable
+   * from other hosts.
+   */
+  host?: string;
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
  * is the boundary, and the upstream credential comes from the store alone.
  */
 declare function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShim;
-//#endregion
-//#region src/adapter.d.ts
 /** Provider route this bundle owns. */
 declare const CODEBUDDY_PROVIDER = "codebuddy-cli";
 /** Provider idle ceiling while one stream read is outstanding. */
@@ -701,8 +699,6 @@ interface CodeBuddyAdapter {
  * ephemeral port applies from the first snapshot after startup.
  */
 declare function createCodeBuddyAdapter(options: CodeBuddyAdapterOptions): CodeBuddyAdapter;
-//#endregion
-//#region src/host-heartbeat.d.ts
 /**
  * Host-side heartbeat: a small JSON file written under `$DSH_HOME` once the
  * `codebuddy` provider is registered. The status CLI reads it to report
@@ -766,8 +762,64 @@ declare function processStartTimeMs(pid: number): number | undefined;
  * (e.g. unsupported platform) the check degrades to plain PID liveness.
  */
 declare function isHeartbeatProcessAlive(heartbeat: CodeBuddyHostHeartbeat): boolean;
-//#endregion
-//#region src/index.d.ts
+/**
+ * Published description of the loopback shim, for external OpenAI-compatible
+ * clients (a chat bot, an editor, another agent host).
+ *
+ * The shim itself is private by construction: it binds a random loopback port
+ * and authenticates with a per-process secret that only lives in memory. That
+ * is the right default — nothing outside this process can use the provider —
+ * but it also means a second local program cannot discover it.
+ *
+ * When the operator pins `shimPort`, the plugin writes this file so such a
+ * client can pick the endpoint up: the base URL, the bearer to send, and the
+ * model ids the account currently serves. The file is created with mode 0600
+ * because the bearer is a live credential for the configured CodeBuddy account
+ * — the client never sees the upstream token, only this shim-local secret.
+ *
+ * Written only when a fixed port is configured; the default (random port) is
+ * deliberately invisible, so an untouched install publishes nothing.
+ *
+ * @module dsh-codebuddy-cli/shim-endpoint
+ */
+/** Basename of the endpoint file inside the Harness home. */
+declare const CODEBUDDY_SHIM_ENDPOINT_FILENAME = ".codebuddy-shim-endpoint.json";
+/** Current on-disk format; readers reject others. */
+declare const ENDPOINT_FORMAT_VERSION = 1;
+/** What the plugin publishes about the running shim. */
+interface CodeBuddyShimEndpoint {
+  version: typeof ENDPOINT_FORMAT_VERSION;
+  package: 'dsh-codebuddy-cli';
+  /** Host PID, so a stale file after a crash can be told apart from a live one. */
+  pid: number;
+  /** Epoch milliseconds when the file was written. */
+  writtenAt: number;
+  /** Shim origin, e.g. `http://127.0.0.1:45871`. */
+  baseUrl: string;
+  /**
+   * OpenAI-compatible root to hand a client: `baseUrl` plus `/v1`, because
+   * clients append `/chat/completions` themselves.
+   */
+  openaiBaseUrl: string;
+  /** Bearer the client must send; it is the shim's own secret, not the upstream token. */
+  token: string;
+  /** Model ids served by the account right now. */
+  models: readonly string[];
+}
+/** Absolute path of the endpoint file. */
+declare function codebuddyShimEndpointPath(): string;
+/** Fields the plugin supplies; identity and timestamps are added here. */
+type CodeBuddyShimEndpointInput = Pick<CodeBuddyShimEndpoint, 'baseUrl' | 'openaiBaseUrl' | 'token' | 'models'>;
+/**
+ * Write (or overwrite) the endpoint file.
+ *
+ * Throws on failure: unlike the heartbeat, a silently missing file means the
+ * external client cannot connect at all, and the operator explicitly asked for
+ * this by pinning a port — so the caller logs it rather than swallowing it.
+ */
+declare function writeShimEndpoint(input: CodeBuddyShimEndpointInput): Promise<void>;
+/** Remove the endpoint file on disposal; a stale one would advertise a dead port. */
+declare function clearShimEndpoint(): Promise<void>;
 /** Stable Cordis plugin name. */
 declare const name = "llm-codebuddy-cli";
 /** The model registry required before the provider can register. */
@@ -818,6 +870,25 @@ interface Config {
    * be turned off from the plugin's own settings card.
    */
   showDockOnOtherProviders?: boolean;
+  /**
+   * Fixed port for the loopback shim, or `0`/absent to keep the OS-assigned
+   * one.
+   *
+   * Pinning it is what makes the provider usable by another local program: the
+   * plugin then publishes `$DSH_HOME/.codebuddy-shim-endpoint.json` with the
+   * base URL and bearer to send (see `src/shim-endpoint.ts`). The default keeps
+   * the endpoint private, so an untouched install exposes nothing new. Takes
+   * effect on the next host start — a listening port cannot move in place.
+   */
+  shimPort?: number;
+  /**
+   * Bind address for the shim; defaults to `127.0.0.1`.
+   *
+   * Leave it on the loopback unless a container or another host must reach it.
+   * The bearer check still applies, but the port becomes reachable beyond this
+   * machine.
+   */
+  shimHost?: string;
 }
 /**
  * The plugin's configuration schema.
@@ -841,5 +912,4 @@ declare const Config: z<Config>;
  * upstream never leaves the provider empty.
  */
 declare function apply(ctx: Context, rawConfig: Config): void;
-//#endregion
-export { CODEBUDDY_AUTH_FILENAME, CODEBUDDY_AUTH_FILE_ENV, CODEBUDDY_HOST_HEARTBEAT_FILENAME, CODEBUDDY_IDE_NAME, CODEBUDDY_IDE_TYPE, CODEBUDDY_PROVIDER, CODEBUDDY_SETTINGS_NS, CODEBUDDY_STREAM_IDLE_TIMEOUT_MS, CODEBUDDY_UNKNOWN_VERSION, type CodeBuddyAdapter, type CodeBuddyAuthStatus, CodeBuddyCatalog, type CodeBuddyChatResult, type CodeBuddyClientIdentity, type CodeBuddyCredential, CodeBuddyCredentialStore, type CodeBuddyCreditAccount, type CodeBuddyCredits, type CodeBuddyEffort, type CodeBuddyHostHeartbeat, type CodeBuddyModelBilling, type CodeBuddyModelInfo, type CodeBuddyModelReasoning, type CodeBuddyRefreshOutcome, type CodeBuddyShim, CodeBuddyUpstreamClient, type CodeBuddyUpstreamModel, type CodeBuddyUsageDaily, type CodeBuddyUsageRow, type CodeBuddyUsageStats, Config, FALLBACK_CODEBUDDY_MODELS, type UpstreamErrorKind, apply, classifyUpstreamError, clearHostHeartbeat, clientIdentityHeaders, codebuddyHostHeartbeatPath, codebuddyOwnAuthPath, createCodeBuddyAdapter, createCodeBuddyShim, defaultAuthDir, defaultAuthDirCandidates, filterEnabledModels, inject, isHeartbeatProcessAlive, name, normalizeCredits, parseCodeBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, resolveClientIdentity, resolveCodeBuddyCliVersion, userAgentFor };
+export { CODEBUDDY_AUTH_FILENAME, CODEBUDDY_AUTH_FILE_ENV, CODEBUDDY_HOST_HEARTBEAT_FILENAME, CODEBUDDY_IDE_NAME, CODEBUDDY_IDE_TYPE, CODEBUDDY_PROVIDER, CODEBUDDY_SETTINGS_NS, CODEBUDDY_SHIM_ENDPOINT_FILENAME, CODEBUDDY_STREAM_IDLE_TIMEOUT_MS, CODEBUDDY_UNKNOWN_VERSION, type CodeBuddyAdapter, type CodeBuddyAuthStatus, CodeBuddyCatalog, type CodeBuddyChatResult, type CodeBuddyClientIdentity, type CodeBuddyCredential, CodeBuddyCredentialStore, type CodeBuddyCreditAccount, type CodeBuddyCredits, type CodeBuddyEffort, type CodeBuddyHostHeartbeat, type CodeBuddyModelBilling, type CodeBuddyModelInfo, type CodeBuddyModelReasoning, type CodeBuddyRefreshOutcome, type CodeBuddyShim, type CodeBuddyShimEndpoint, CodeBuddyUpstreamClient, type CodeBuddyUpstreamModel, type CodeBuddyUsageDaily, type CodeBuddyUsageRow, type CodeBuddyUsageStats, Config, FALLBACK_CODEBUDDY_MODELS, type UpstreamErrorKind, apply, classifyUpstreamError, clearHostHeartbeat, clearShimEndpoint, clientIdentityHeaders, codebuddyHostHeartbeatPath, codebuddyOwnAuthPath, codebuddyShimEndpointPath, createCodeBuddyAdapter, createCodeBuddyShim, defaultAuthDir, defaultAuthDirCandidates, filterEnabledModels, inject, isHeartbeatProcessAlive, name, normalizeCredits, parseCodeBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, resolveClientIdentity, resolveCodeBuddyCliVersion, userAgentFor, writeShimEndpoint };
