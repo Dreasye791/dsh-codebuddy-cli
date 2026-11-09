@@ -174,6 +174,14 @@ export interface Config {
    * machine.
    */
   shimHost?: string
+  /**
+   * Fixed bearer the shim accepts, for an external OpenAI-compatible client.
+   *
+   * Only meaningful together with a pinned `shimPort`. Empty (the default)
+   * keeps the per-process random secret, under which an external client has to
+   * be reconfigured every time the host restarts.
+   */
+  shimToken?: string
 }
 
 /**
@@ -233,6 +241,10 @@ export const Config: z<Config> = z.object({
     .description('Bind address for the shim (default 127.0.0.1)')
     .default('127.0.0.1')
     .volatile(),
+  shimToken: z.string()
+    .description('Fixed bearer the shim accepts; empty keeps a per-process random secret. Set it so an external client survives host restarts')
+    .default('')
+    .volatile(),
 }) as unknown as z<Config>
 
 /**
@@ -255,6 +267,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   // updated from the agent loop below; the shim reads it per request.
   const turns = createTurnTracker()
   const pinnedPort = config.shimPort ?? 0
+  const pinnedToken = config.shimToken ?? ''
   const shim = createCodeBuddyShim({
     store,
     client,
@@ -263,6 +276,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     turnIdFor: sessionId => turns.current(sessionId),
     ...pinnedPort > 0 ? { port: pinnedPort } : {},
     ...config.shimHost === undefined ? {} : { host: config.shimHost },
+    ...pinnedToken === '' ? {} : { token: pinnedToken },
   })
 
   // A turn starts at the loop's first step. Reading the boundary here rather

@@ -75,6 +75,16 @@ export interface CodeBuddyShimOptions {
    * from other hosts.
    */
   host?: string
+  /**
+   * Fixed bearer to accept instead of the per-process random secret.
+   *
+   * A random secret is the right default (nothing outside this process knows
+   * it), but it also means an external client that was handed the endpoint has
+   * to be reconfigured after every host restart. Pinning a token trades that
+   * for a stable credential the operator is responsible for keeping secret.
+   * Absent or empty keeps the random behaviour.
+   */
+  token?: string
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -148,7 +158,12 @@ export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShi
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
   // The shim never forwards it upstream — the real credential comes from the
   // store. A local attacker who can hit the port still cannot forge this.
-  const SHARED_SECRET = randomBytes(32).toString('base64url')
+  // A pinned token survives host restarts so an external client keeps working;
+  // otherwise the secret is per-process and a restart invalidates it. See
+  // CodeBuddyShimOptions.token for the trade-off.
+  const SHARED_SECRET = options.token === undefined || options.token === ''
+    ? randomBytes(32).toString('base64url')
+    : options.token
 
   /** Constant-time bearer check; absent or mismatched bearers are rejected. */
   function bearerOk(req: IncomingMessage): boolean {

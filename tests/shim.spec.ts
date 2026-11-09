@@ -56,6 +56,7 @@ async function startShim(
   upstreamResponse: () => CodeBuddyChatResult,
   turnIdFor?: (sessionId: string | undefined) => string | undefined,
   logger?: { warn: (...args: unknown[]) => void, error: (...args: unknown[]) => void },
+  token?: string,
 ): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-shim-'))
   CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
@@ -81,6 +82,7 @@ async function startShim(
     catalog: new CodeBuddyCatalog(),
     ...turnIdFor === undefined ? {} : { turnIdFor },
     ...logger === undefined ? {} : { logger },
+    ...token === undefined ? {} : { token },
     client: {
       async chatStream(_credential, bodyJson, _signal, extraHeaders): Promise<CodeBuddyChatResult> {
         harness.upstreamBodies.push(bodyJson)
@@ -246,6 +248,31 @@ describe('CodeBuddy shim', () => {
       headers: { authorization: `Bearer ${harness.shim.token()}` },
     })
     expect(response.status).toBe(404)
+  })
+
+  /**
+   * A pinned token is what keeps an external client (a chat bot, an editor)
+   * authenticated across host restarts; without it the secret is regenerated
+   * per process and the client's key goes stale on every restart.
+   */
+  it('uses a pinned token instead of the per-process secret', async () => {
+    const harness = await startShim(
+      () => ({ ok: false, status: 500, kind: 'server', message: 'unused' }),
+      undefined,
+      undefined,
+      'pinned-test-token',
+    )
+    expect(harness.shim.token()).toBe('pinned-test-token')
+
+    const accepted = await fetch(`${harness.shim.baseUrl()}/v1/models`, {
+      headers: { authorization: 'Bearer pinned-test-token' },
+    })
+    expect(accepted.status).toBe(200)
+
+    const rejected = await fetch(`${harness.shim.baseUrl()}/v1/models`, {
+      headers: { authorization: 'Bearer some-other-token' },
+    })
+    expect(rejected.status).toBe(401)
   })
 
   it('binds loopback only', async () => {
