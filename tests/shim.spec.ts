@@ -126,7 +126,7 @@ describe('CodeBuddy shim', () => {
       headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
       body: JSON.stringify({
         model: 'auto',
-        stream: false,
+        stream: true,
         messages: [{ role: 'user', content: 'hi' }],
         tool_choice: { type: 'auto' },
       }),
@@ -140,6 +140,49 @@ describe('CodeBuddy shim', () => {
     const forwarded = JSON.parse(harness.upstreamBodies[0] ?? '') as Record<string, unknown>
     expect(forwarded['stream']).toBe(true)
     expect(forwarded['tool_choice']).toBe('auto')
+  })
+
+  /**
+   * OpenAI clients that send `stream: false` expect one JSON object. The
+   * upstream only streams, so the shim has to fold the chunks itself; without
+   * that a non-streaming bot receives "data: {...}" as a plain string and
+   * fails with a type error instead of an answer.
+   */
+  it('folds the stream into one completion when the caller asks for stream: false', async () => {
+    const sse = 'data: {"id":"cmb-1","model":"deepseek-v4.1-flash","created":123,"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}\n\n'
+      + 'data: {"id":"cmb-1","model":"deepseek-v4.1-flash","created":123,"choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n'
+      + 'data: {"id":"cmb-1","model":"deepseek-v4.1-flash","created":123,"choices":[{"index":0,"delta":{"content":"lo"}}]}\n\n'
+      + 'data: {"id":"cmb-1","model":"deepseek-v4.1-flash","created":123,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'
+      + 'data: [DONE]\n\n'
+    const harness = await startShim(() => ({
+      ok: true,
+      response: new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    }))
+
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({
+        model: 'deepseek-v4.1-flash',
+        stream: false,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('application/json')
+
+    const body = await response.json() as {
+      object: string
+      model: string
+      choices: { message: { role: string, content: string }, finish_reason: string }[]
+      usage: { total_tokens: number }
+    }
+    expect(body.object).toBe('chat.completion')
+    expect(body.model).toBe('deepseek-v4.1-flash')
+    expect(body.choices[0]?.message.role).toBe('assistant')
+    expect(body.choices[0]?.message.content).toBe('Hello')
+    expect(body.choices[0]?.finish_reason).toBe('stop')
+    expect(body.usage.total_tokens).toBe(5)
   })
 
   it('warns once per session when a session header yields no turn id', async () => {

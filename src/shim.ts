@@ -15,7 +15,7 @@
  * @module dsh-codebuddy-cli/shim
  */
 
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import type { CodeBuddyCredentialStore } from './auth.ts'
@@ -132,6 +132,164 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
+}
+
+/**
+ * Whether the caller asked for a streamed reply.
+ *
+ * OpenAI defaults `stream` to false, and clients disagree about it: pi-ai (the
+ * host's own client) always sends `stream: true`, while other bots send
+ * `false` or omit it and then expect one JSON object. The upstream only speaks
+ * SSE, so the shim has to look at the caller's intent and fold the stream
+ * itself when a plain completion was requested.
+ *
+ * Unparsable bodies keep the streaming behaviour, matching what the host always
+ * gets: a caller that cannot produce a valid body has bigger problems than the
+ * response shape.
+ */
+function wantsStreaming(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return true
+    return (parsed as Record<string, unknown>)['stream'] !== false
+  } catch {
+    return true
+  }
+}
+
+/** Model id the caller asked for; used when a streamed chunk omits it. */
+function modelOf(raw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed === 'object' && parsed !== null) {
+      const model = (parsed as Record<string, unknown>)['model']
+      if (typeof model === 'string' && model !== '') return model
+    }
+  } catch {
+    // Fall through to the placeholder.
+  }
+  return 'unknown'
+}
+
+/** One accumulated tool call; upstream sends name once and arguments in pieces. */
+interface CollectedToolCall {
+  id: string
+  type: string
+  function: { name: string, arguments: string }
+}
+
+/**
+ * Fold an upstream SSE stream into a single `chat.completion` document.
+ *
+ * Used only when the caller asked for `stream: false`. Content, reasoning text,
+ * tool-call deltas and the trailing usage block are carried over; everything
+ * else in a chunk is dropped because non-streaming OpenAI clients do not read
+ * it. A malformed line is skipped rather than failing the whole completion —
+ * the same tolerance the streaming path has.
+ */
+async function collectCompletion(
+  body: NonNullable<Response['body']>,
+  fallbackModel: string,
+): Promise<Record<string, unknown>> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let id = ''
+  let created = 0
+  let model = fallbackModel
+  let content = ''
+  let reasoning = ''
+  let finishReason = ''
+  let usage: unknown = null
+  const toolCalls: CollectedToolCall[] = []
+
+  const apply = (payload: Record<string, unknown>): void => {
+    if (typeof payload['id'] === 'string' && payload['id'] !== '') id = payload['id']
+    if (typeof payload['created'] === 'number') created = payload['created']
+    if (typeof payload['model'] === 'string' && payload['model'] !== '') model = payload['model']
+    if (payload['usage'] !== null && payload['usage'] !== undefined) usage = payload['usage']
+
+    const choices = payload['choices']
+    if (!Array.isArray(choices)) return
+    for (const entry of choices) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const choice = entry as Record<string, unknown>
+      const delta = choice['delta']
+      if (typeof delta === 'object' && delta !== null) {
+        const fields = delta as Record<string, unknown>
+        if (typeof fields['content'] === 'string') content += fields['content']
+        if (typeof fields['reasoning_content'] === 'string') reasoning += fields['reasoning_content']
+        const calls = fields['tool_calls']
+        if (Array.isArray(calls)) {
+          for (const rawCall of calls) {
+            if (typeof rawCall !== 'object' || rawCall === null) continue
+            const call = rawCall as Record<string, unknown>
+            const index = typeof call['index'] === 'number' ? call['index'] : toolCalls.length
+            while (toolCalls.length <= index) {
+              toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } })
+            }
+            const target = toolCalls[index] as CollectedToolCall
+            if (typeof call['id'] === 'string' && call['id'] !== '') target.id = call['id']
+            if (typeof call['type'] === 'string' && call['type'] !== '') target.type = call['type']
+            const fn = call['function']
+            if (typeof fn === 'object' && fn !== null) {
+              const pieces = fn as Record<string, unknown>
+              if (typeof pieces['name'] === 'string' && pieces['name'] !== '') target.function.name = pieces['name']
+              if (typeof pieces['arguments'] === 'string') target.function.arguments += pieces['arguments']
+            }
+          }
+        }
+      }
+      const finish = choice['finish_reason']
+      if (typeof finish === 'string' && finish !== '') finishReason = finish
+    }
+  }
+
+  const drain = (): void => {
+    for (;;) {
+      const newline = buffer.indexOf('\n')
+      if (newline === -1) return
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      if (!line.startsWith('data:')) continue
+      const data = line.slice('data:'.length).trim()
+      if (data === '' || data === '[DONE]') continue
+      try {
+        const parsed: unknown = JSON.parse(data)
+        if (typeof parsed === 'object' && parsed !== null) apply(parsed as Record<string, unknown>)
+      } catch {
+        // Truncated chunk: skip it, exactly as the streaming path tolerates.
+      }
+    }
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (value !== undefined) {
+      buffer += decoder.decode(value, { stream: true })
+      drain()
+    }
+    if (done) break
+  }
+  buffer += decoder.decode()
+  drain()
+
+  const message: Record<string, unknown> = { role: 'assistant', content }
+  if (reasoning !== '') message['reasoning_content'] = reasoning
+  if (toolCalls.length > 0) message['tool_calls'] = toolCalls
+
+  return {
+    id: id === '' ? `chatcmpl-${randomUUID()}` : id,
+    object: 'chat.completion',
+    created: created === 0 ? Math.floor(Date.now() / 1000) : created,
+    model,
+    choices: [{
+      index: 0,
+      message,
+      finish_reason: finishReason === '' ? 'stop' : finishReason,
+    }],
+    ...usage === null ? {} : { usage },
+  }
 }
 
 /**
@@ -293,6 +451,21 @@ export function createCodeBuddyShim(options: CodeBuddyShimOptions): CodeBuddyShi
         result.kind,
         `codebuddy upstream ${result.kind} (http ${result.status}): ${result.message.slice(0, 400)}`,
       )
+      return
+    }
+
+    // A caller that asked for one JSON object gets the stream folded for it;
+    // the host's own client always asks for a stream and keeps the raw SSE.
+    if (!wantsStreaming(raw)) {
+      try {
+        const completion = await collectCompletion(
+          result.response.body as NonNullable<Response['body']>,
+          modelOf(raw),
+        )
+        writeJson(res, 200, completion)
+      } catch (error: unknown) {
+        writeOpenAIError(res, 502, 'upstream_stream', `codebuddy stream could not be collected: ${String(error)}`)
+      }
       return
     }
 
